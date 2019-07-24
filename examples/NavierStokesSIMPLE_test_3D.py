@@ -1,8 +1,13 @@
 from ngsolve import *
-from NavierStokesSIMPLE_iterative import *
+
 import netgen.gui
 from netgen.geom2d import SplineGeometry
 from ngsolve.internal import visoptions
+
+import sys
+sys.path.append('../')
+from NavierStokesSIMPLE_iterative import *
+
 
 from netgen.csg import *
 geo = CSGeometry()
