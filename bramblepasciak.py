@@ -22,7 +22,7 @@ def harmonic_extension(f, blfA, inverse, result=None):
 
 
 def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=1e-6, maxsteps=100, printrates=True,
-                     initialize=True, rel_err=True):
+                     initialize=True, rel_err=True, k=0):
     """preconditioned bramble pasciak conjugate gradient method
 
 
@@ -71,6 +71,9 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
     rel_err : bool
       Whether to use the tolerance relative to the the initial error or not.
 
+    k :
+      Scaling for preconditioner A. If not set, a proper scaling is derived using Eigenvalues
+
     Returns
     -------
     (vector - call by reference)
@@ -81,47 +84,25 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
 
     """
 
-    class myAmatrix(BaseMatrix):
-        def __init__ (self, blfA):
-            super(myAmatrix, self).__init__()
-            self.blfA = blfA
-            self.mat = (IdentityMatrix() - blfA.harmonic_extension_trans) @ (blfA.mat + blfA.inner_matrix) @ (IdentityMatrix() - blfA.harmonic_extension)
-            
-        def Mult(self, x, y):
-            y.data = self.mat * x
-
-        def Height(self):
-            return self.blfA.mat.height
-            
-        def Width(self):
-            return self.blfA.mat.width
-
-        def CreateColVector(self):
-            return self.blfA.mat.CreateColVector()
-
-        def CreateVector(self):
-            return self.blfA.mat.CreateColVector()
-
     if blfA.condense:
-        matA = myAmatrix(blfA)
+        matA = (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension_trans) @ (blfA.mat + blfA.inner_matrix) @ (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension)
     else:
         matA = blfA.mat
     matB = blfB.mat
     
     timer_prep = Timer("BPCG-Preparation")
     timer_prep.Start()
-    '''
-    timer_prepev = Timer("BPCG-Preparation-EV")
-    timer_prepev.Start()
-    lams = EigenValues_Preconditioner(mat=matA, pre=preA_unscaled, tol=1e-3)
-    timer_prepev.Stop()
-    # print("min", min(lams), "max", max(lams))
-    k = 1. / min(lams) + 1e-3
-    print("condition", max(lams) / min(lams))
-    '''
-    k = 0.1
 
-    
+    if (k ==0):
+        timer_prepev = Timer("BPCG-Preparation-EV")
+        timer_prepev.Start()
+        lams = EigenValues_Preconditioner(mat=matA, pre=preA_unscaled, tol=1e-3)
+        timer_prepev.Stop()
+        # print("min", min(lams), "max", max(lams))
+        k = 1. / min(lams) + 1e-3
+        print("k = ", k)
+        print("condition", max(lams) / min(lams))
+       
     # print("scale factor", k)
     preA = k * preA_unscaled
 
