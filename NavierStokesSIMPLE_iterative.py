@@ -146,8 +146,8 @@ class NavierStokes:
         self.mapV = PermutationMatrix(self.Xproj.ndof, ind)
         
         if mesh.dim == 2:
-            self.fesh1_1 = H1(mesh, order=order, dirichlet=inflow + "|" + wall)
-            self.fesh1_2 = H1(mesh, order=order, dirichlet=inflow + "|" + wall + "|" + outflow)            
+            self.fesh1_1 = H1(mesh, order=1, dirichlet=inflow + "|" + wall)
+            self.fesh1_2 = H1(mesh, order=1, dirichlet=inflow + "|" + wall + "|" + outflow)            
             self.fesh1 = FESpace([self.fesh1_1,self.fesh1_2])
         else:
             self.fesh1_1 = H1(mesh, order=1, dirichlet=inflow + "|" + wall)
