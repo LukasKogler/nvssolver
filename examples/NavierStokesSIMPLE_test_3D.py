@@ -1,6 +1,6 @@
 from ngsolve import *
 
-import netgen.gui
+#import netgen.gui
 from netgen.geom2d import SplineGeometry
 from ngsolve.internal import visoptions
 
@@ -23,14 +23,30 @@ Draw(mesh)
 
 SetHeapSize(100*1000*1000)
 timestep = 0.002
+cores = 4
+SetNumThreads(cores)
 
 with TaskManager():
   navstokes = NavierStokes (mesh, nu=0.001, order=3, timestep = timestep,
                               inflow="inlet", outflow="outlet", wall="wall|cyl",
                               uin=CoefficientFunction( (16*y*(0.41-y)*z*(0.41-z)/(0.41*0.41*0.41*0.41), 0, 0) ))
                               
-
-navstokes.SolveInitial(iterative = True)
+  lit, lt_prep, lt_its, ndof = navstokes.SolveInitial(iterative=True)
+  print("###############################")
+  print("lt_prep = ", lt_prep)
+  print("lt_its = ", lt_its)
+  print("sum_time = ", lt_its + lt_prep)
+  print("ndof = ", ndof)
+  
+  dpcs_prep = ndof/(lt_prep * cores)
+  dpcs_its = ndof/(lt_its * cores)
+  dpcs = ndof/((lt_its+lt_prep) * cores)
+  print("dpcs_prep = ", dpcs_prep/100)
+  print("dpcs_its = ", dpcs_its/100)
+  print("dpcs = ", dpcs/100)
+  print("###############################")
+  #it.append(lit)
+  
 
 Draw (navstokes.pressure, mesh, "pressure")
 Draw (navstokes.velocity, mesh, "velocity")
