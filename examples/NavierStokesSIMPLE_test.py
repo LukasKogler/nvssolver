@@ -19,7 +19,7 @@ ngsglobals.msg_level = 0
 SetHeapSize(100 * 1000 * 100)
 timestep = 1e-3
 
-order = 3
+order = 8
 
 it = []
 
@@ -45,6 +45,7 @@ for i in range(1):
     print("dpcs_prep = ", dpcs_prep/100)
     print("dpcs_its = ", dpcs_its/100)
     print("dpcs = ", dpcs/100)
+    print("Norm(vel)", Integrate(navstokes.velocity*navstokes.velocity, mesh, VOL))
     print("###############################")
     it.append(lit)
     

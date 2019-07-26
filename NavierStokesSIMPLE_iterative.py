@@ -20,8 +20,8 @@ class NavierStokes:
         self.inflow = inflow
         self.outflow = outflow
         self.wall = wall
-        hodivfree = False
-        V = HDiv(mesh, order=order, dirichlet=inflow + "|" + wall, RT=False, hodivfree = hodivfree)
+        self.hodivfree = False
+        V = HDiv(mesh, order=order, dirichlet=inflow + "|" + wall, RT=False, hodivfree = self.hodivfree)
         self.V = V
         Vhat = TangentialFacetFESpace(mesh, order=order - 1, dirichlet=inflow + "|" + wall + "|" + outflow)
         self.Vhat = Vhat
@@ -116,7 +116,7 @@ class NavierStokes:
             self.conv_operator = self.convertl2.T @ self.conv_l2.mat @ self.convertl2
 
         self.V2 = HDiv(mesh, order=order, RT=False, discontinuous=True)
-        if hodivfree:
+        if self.hodivfree:
             self.Q = L2(mesh, order=0)            
         else:
             self.Q = L2(mesh, order=order - 1)
@@ -487,8 +487,18 @@ class NavierStokes:
                     
                 preA = MypreA(self.X, blfA, blocks, GS = True)
                 
-                sol = BlockVector([self.gfu.vec, self.gfup.vec])                
-                it, t_prep, t_it = BramblePasciakCG(blfA, blfB, None, self.f.vec, g.vec, preA, preM, sol, initialize=False, tol=1e-10, maxsteps=400, rel_err=True)                                
+                sol = BlockVector([self.gfu.vec, self.gfup.vec])
+
+                if self.hodivfree and elinternal:
+                    self.f.vec.data += blfA.harmonic_extension_trans * self.f.vec              
+                    
+                
+                it, t_prep, t_it = BramblePasciakCG(blfA, blfB, None, self.f.vec, g.vec, preA, preM, sol, initialize=False, tol=1e-10, maxsteps=400, rel_err=True, staticcond = (self.hodivfree and elinternal))
+
+                if self.hodivfree and elinternal:
+                    self.gfu.vec.data +=blfA.inner_solve * self.f.vec
+                    self.gfu.vec.data +=blfA.harmonic_extension * self.gfu.vec
+                
                 return it, t_prep, t_it, self.X.ndof + self.Q.ndof
             else:
                 self.astokes.Assemble()
