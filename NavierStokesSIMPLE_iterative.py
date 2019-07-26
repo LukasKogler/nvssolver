@@ -227,12 +227,12 @@ class NavierStokes:
                 
                 Vlo = HDiv(mesh, order=1)
                 Vhatlo = TangentialFacetFESpace(mesh, order=1)
-                if (self.h1order==1):
+                if False: #(self.h1order==1):
                     Xlo = FESpace([Vlo,Vhatlo])
                     (ulo,uhatlo), (vlo,vhatlo) = Xlo.TnT()
                                                            
                     ind = Xlo.ndof * [0]
-                    for f in mesh.edges:
+                    for f in mesh.facets:
                         dofs1_div = self.V.GetDofNrs(f)
                         dofs1_facet = self.Vhat.GetDofNrs(f)
                         
@@ -254,6 +254,7 @@ class NavierStokes:
                     vlo = v
                     uhatlo = uhat
                     vhatlo = vhat
+                    lo_to_high = IdentityMatrix()
                 
                 ###### Trafo to H1 space ######
                 #amixed = BilinearForm(trialspace=self.fesh1, testspace=self.X)
