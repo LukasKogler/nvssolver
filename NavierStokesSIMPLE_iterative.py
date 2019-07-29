@@ -21,6 +21,7 @@ class NavierStokes:
         self.outflow = outflow
         self.wall = wall
         self.hodivfree = False
+        self.order = order
         V = HDiv(mesh, order=order, dirichlet=inflow + "|" + wall, RT=False, hodivfree = self.hodivfree)
         self.V = V
         Vhat = TangentialFacetFESpace(mesh, order=order - 1, dirichlet=inflow + "|" + wall + "|" + outflow)
@@ -225,13 +226,15 @@ class NavierStokes:
 
                 mesh = self.gfu.space.mesh
                 
-                Vlo = HDiv(mesh, order=1)
-                Vhatlo = TangentialFacetFESpace(mesh, order=1)
-                if False: #(self.h1order==1):
+                Vlo = HDiv(mesh, order=self.order)
+                Vhatlo = TangentialFacetFESpace(mesh, order=self.order-1)
+
+                if (self.h1order==1):
                     Xlo = FESpace([Vlo,Vhatlo])
                     (ulo,uhatlo), (vlo,vhatlo) = Xlo.TnT()
                                                            
                     ind = Xlo.ndof * [0]
+                    
                     for f in mesh.facets:
                         dofs1_div = self.V.GetDofNrs(f)
                         dofs1_facet = self.Vhat.GetDofNrs(f)
@@ -245,9 +248,8 @@ class NavierStokes:
                             ind[dofs2_div[i]] = dofs1_div[i]
                         for i in range(len(dofs2_facet)):
                             ind[dofs2_facet[i]+off2] = dofs1_facet[i] + off1
-
-
-                    lo_to_high = PermutationMatrix(self.X.ndof, ind)
+                    
+                    lo_to_high = PermutationMatrix(self.X.ndof, ind)                    
                 else:
                     Xlo = self.X
                     ulo = u
@@ -297,7 +299,7 @@ class NavierStokes:
                 for f in mesh.facets: #edges in 2d, faces in 3d
                     eblocks.append ( Xlo.GetDofNrs(f)  )
 
-                einv = acomp.mat.CreateBlockSmoother(eblocks)
+                #einv = acomp.mat.CreateBlockSmoother(eblocks)
 
                 '''
                 if not elinternal:
@@ -329,7 +331,7 @@ class NavierStokes:
                         # remove hidden dofs (=-2)
                         fblocks.append ( [d for d in self.X.GetDofNrs(f) if d != -2] )
                                 
-                    finv = acomp.mat.CreateBlockSmoother(fblocks)
+                    #finv = acomp.mat.CreateBlockSmoother(fblocks)
                                 
                 class MyBasisTrafo(BaseMatrix):
                     def __init__ (self, mat, eblocks, fblocks):
@@ -346,7 +348,7 @@ class NavierStokes:
                             res = self.mat.CreateColVector()
                             y.data = self.einv * x
                             res.data = x - self.mat * y
-                            y.data += finv * res
+                            y.data += self.finv * res
                         else:
                             y.data = self.einv * x
                         self.etimer.Stop()
