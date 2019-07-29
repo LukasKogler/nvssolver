@@ -20,7 +20,7 @@ class NavierStokes:
         self.inflow = inflow
         self.outflow = outflow
         self.wall = wall
-        self.hodivfree = False
+        self.hodivfree = True
         self.order = order
         V = HDiv(mesh, order=order, dirichlet=inflow + "|" + wall, RT=False, hodivfree = self.hodivfree)
         self.V = V
@@ -226,7 +226,7 @@ class NavierStokes:
 
                 mesh = self.gfu.space.mesh
                 
-                Vlo = HDiv(mesh, order=self.order)
+                Vlo = HDiv(mesh, order=self.order, hodivfree = self.hodivfree)
                 Vhatlo = TangentialFacetFESpace(mesh, order=self.order-1)
 
                 if (self.h1order==1):
@@ -294,6 +294,8 @@ class NavierStokes:
                 amixed += uh1*vdual * dS
                 amixed += uh1*tang(vhatlo) * dS
                 amixed.Assemble()
+                
+                amixed_matT = amixed.mat.CreateTranspose()
 
                 eblocks = []            
                 for f in mesh.facets: #edges in 2d, faces in 3d
@@ -340,6 +342,7 @@ class NavierStokes:
                         self.einv = mat.CreateBlockSmoother(eblocks)
                         if not elinternal:
                             self.finv = mat.CreateBlockSmoother(fblocks)
+
                         self.etimer = Timer("myembedding")
                         self.etimer_t = Timer("myembedding_trans")
                     def Mult(self, x, y):
@@ -350,7 +353,9 @@ class NavierStokes:
                             res.data = x - self.mat * y
                             y.data += self.finv * res
                         else:
-                            y.data = self.einv * x
+                            res = self.mat.CreateColVector()
+                            res.data = amixed.mat * x
+                            y.data = self.einv * res
                         self.etimer.Stop()
 
                     def MultTrans(self, x, y):
@@ -361,13 +366,23 @@ class NavierStokes:
                             res.data = x - self.mat.T * y
                             y.data += self.einv.T * res
                         else:
-                            y.data = self.einv.T * x
+                            res = self.mat.CreateColVector()
+                            
+                            res.data = self.einv.T * x
+                            y.data = amixed_matT * res
                         self.etimer_t.Stop()
+                        
                     def CreateColVector(self):
                         return acomp.mat.CreateColVector()
+
+                    def CreateRowVector(self):
+                        return amixed.mat.CreateRowVector()
             
                 trafo = MyBasisTrafo(acomp.mat, eblocks, fblocks)
-                transform = (lo_to_high.T @ trafo @amixed.mat)
+                
+                #transform = (lo_to_high.T @ trafo @amixed.mat)
+                #transform = (trafo @amixed.mat)
+                transform= trafo
                 
                 if mesh.dim ==2 :
                     uh1_1,vh1_1 = self.fesh1_1.TnT()
