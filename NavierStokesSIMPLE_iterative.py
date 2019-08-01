@@ -20,7 +20,7 @@ class NavierStokes:
         self.inflow = inflow
         self.outflow = outflow
         self.wall = wall
-        self.hodivfree = True
+        self.hodivfree = False
         self.order = order
         V = HDiv(mesh, order=order, dirichlet=inflow + "|" + wall, RT=False, hodivfree = self.hodivfree)
         self.V = V
@@ -155,13 +155,13 @@ class NavierStokes:
 
         self.h1order = 1
         if mesh.dim == 2:
-            self.fesh1_1 = H1(mesh, order=self.h1order, dirichlet=inflow + "|" + wall)
-            self.fesh1_2 = H1(mesh, order=self.h1order, dirichlet=inflow + "|" + wall + "|" + outflow)            
+            self.fesh1_1 = H1(mesh, order=self.h1order, innerorder = 0, dirichlet=inflow + "|" + wall)
+            self.fesh1_2 = H1(mesh, order=self.h1order, innerorder = 0, dirichlet=inflow + "|" + wall + "|" + outflow)
             self.fesh1 = FESpace([self.fesh1_1,self.fesh1_2])
         else:
-            self.fesh1_1 = H1(mesh, order=self.h1order, dirichlet=inflow + "|" + wall)
-            self.fesh1_2 = H1(mesh, order=self.h1order, dirichlet=inflow + "|" + wall + "|" + outflow)
-            self.fesh1_3 = H1(mesh, order=self.h1order, dirichlet=inflow + "|" + wall + "|" + outflow)            
+            self.fesh1_1 = H1(mesh, order=self.h1order, innerorder = 0, dirichlet=inflow + "|" + wall)
+            self.fesh1_2 = H1(mesh, order=self.h1order, innerorder = 0, dirichlet=inflow + "|" + wall + "|" + outflow)
+            self.fesh1_3 = H1(mesh, order=self.h1order,  innerorder = 0, dirichlet=inflow + "|" + wall + "|" + outflow)            
             self.fesh1 = FESpace([self.fesh1_1,self.fesh1_2,self.fesh1_3])
 
     @property
@@ -206,7 +206,13 @@ class NavierStokes:
                 u, uhat, sigma, W = self.X.TrialFunction()
                 v, vhat, tau, R = self.X.TestFunction()
 
-                blfA = BilinearForm(self.X, eliminate_hidden=True, condense=elinternal, store_inner = elinternal)
+                if elinternal:
+                    if self.hodivfree:
+                        store_inner=False
+                    else:
+                        store_inner=True
+                
+                blfA = BilinearForm(self.X, eliminate_hidden=True, condense=elinternal, store_inner = store_inner)
                 blfA += self.stokesA
                 blfA += self.V_trace
 
@@ -226,8 +232,8 @@ class NavierStokes:
 
                 mesh = self.gfu.space.mesh
                 
-                Vlo = HDiv(mesh, order=self.order, hodivfree = self.hodivfree)
-                Vhatlo = TangentialFacetFESpace(mesh, order=self.order-1)
+                Vlo = HDiv(mesh, order=1, hodivfree = self.hodivfree)
+                Vhatlo = TangentialFacetFESpace(mesh, order=1)
 
                 if (self.h1order==1):
                     Xlo = FESpace([Vlo,Vhatlo])
@@ -244,10 +250,23 @@ class NavierStokes:
 
                         off1 = self.V.ndof
                         off2 = Vlo.ndof
-                        for i in range(len(dofs2_div)):
-                            ind[dofs2_div[i]] = dofs1_div[i]
-                        for i in range(len(dofs2_facet)):
-                            ind[dofs2_facet[i]+off2] = dofs1_facet[i] + off1
+                        if mesh.dim == 2:
+                            for i in range(len(dofs2_div)):
+                                ind[dofs2_div[i]] = dofs1_div[i]
+                            for i in range(len(dofs2_facet)):
+                                ind[dofs2_facet[i]+off2] = dofs1_facet[i] + off1
+                        else:
+                            hdiv_offset = (self.order+1)*(self.order)//2
+                            #hdiv-dofs
+                            ind[dofs2_div[0]] = dofs1_div[0] 
+                            ind[dofs2_div[1]] = dofs1_div[1]
+                            ind[dofs2_div[2]] = dofs1_div[1+hdiv_offset]
+                            #facet-dofs
+                            for i in range(4):
+                                ind[dofs2_facet[i]+off2] = dofs1_facet[i] + off1
+                            facet_offset = self.order #actually order+1 but facet order is set to order-1
+                            ind[dofs2_facet[4]+off2] = dofs1_facet[2*facet_offset] + off1
+                            ind[dofs2_facet[5]+off2] = dofs1_facet[2*facet_offset+1] + off1
                     
                     lo_to_high = PermutationMatrix(self.X.ndof, ind)                    
                 else:
@@ -382,32 +401,40 @@ class NavierStokes:
                 
                 #transform = (lo_to_high.T @ trafo @amixed.mat)
                 #transform = (trafo @amixed.mat)
-                transform= trafo
+                transform = (lo_to_high.T @ trafo)
+                #transform = trafo
                 
                 if mesh.dim ==2 :
                     uh1_1,vh1_1 = self.fesh1_1.TnT()
                     uh1_2,vh1_2 = self.fesh1_2.TnT()
-    
                     aH1_1 = BilinearForm(self.fesh1_1)
+                    
                     aH1_1 += 2*self.nu * InnerProduct(grad(uh1_1),grad(vh1_1)) * dx
-
+                    
                     aH1_2 = BilinearForm(self.fesh1_2)
                     aH1_2 += 2*self.nu * InnerProduct(grad(uh1_2),grad(vh1_2)) * dx
-
+                    
                     if self.h1order > 1:
                         preAh1_1 = Preconditioner(aH1_1, 'bddc', coarsetype="h1amg")
                         preAh1_2 = Preconditioner(aH1_2, 'bddc', coarsetype="h1amg")
                     else:
+                        #if mpi:
+                        #    preAh1_1 = Preconditioner(aH1_1, "ngs_amg.h1_scal", ngs_amg_log_level = 2, ngs_amg_log_file = "")
+                        #    preAh1_2 = Preconditioner(aH1_2, "ngs_amg.h1_scal", ngs_amg_log_level = 2, ngs_amg_log_file = "")
+                        #else:
                         preAh1_1 = Preconditioner(aH1_1, 'h1amg')
                         preAh1_2 = Preconditioner(aH1_2, 'h1amg')
+                        #preAh1_1 = Preconditioner(aH1_1, 'direct', inverse = "sparsecholesky")
+                        #preAh1_2 = Preconditioner(aH1_2, 'direct', inverse = "sparsecholesky")
 
                     aH1_1.Assemble()
                     aH1_2.Assemble()
 
                     emb_comp1 = Embedding(self.fesh1.ndof,self.fesh1.Range(0))
                     emb_comp2 = Embedding(self.fesh1.ndof,self.fesh1.Range(1))
-    
+
                     preAh1 = emb_comp1 @ preAh1_1 @ emb_comp1.T + emb_comp2 @ preAh1_2 @ emb_comp2.T
+                    
                 else:
                     uh1_1,vh1_1 = self.fesh1_1.TnT()
                     uh1_2,vh1_2 = self.fesh1_2.TnT()
@@ -423,7 +450,7 @@ class NavierStokes:
                     aH1_3 += 2*self.nu * InnerProduct(grad(uh1_3),grad(vh1_3)) * dx
 
                     if self.h1order > 1:
-                        preAh1_1 = Preconditioner(aH1_1, 'bddc', coarsetype="h1amg" )                        
+                        preAh1_1 = Preconditioner(aH1_1, 'bddc', coarsetype="h1amg" )
                         preAh1_2 = Preconditioner(aH1_2, 'bddc', coarsetype="h1amg" )
                         preAh1_3 = Preconditioner(aH1_3, 'bddc', coarsetype="h1amg" )
                     else:
@@ -509,8 +536,23 @@ class NavierStokes:
 
                 if self.hodivfree and elinternal:
                     self.f.vec.data += blfA.harmonic_extension_trans * self.f.vec              
+
+                if not self.hodivfree:
+                    mat2 = blfB.mat @ ((IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension_trans) @ (blfA.mat + blfA.inner_matrix) @ (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension)) @ blfB.mat.T
+                else:
+                    mat2 = blfB.mat @ preA @ blfB.mat.T
                     
-                
+
+                #Qinv = mp.mat.Inverse(self.Q.FreeDofs(), inverse="sparsecholesky")
+                #lams = EigenValues_Preconditioner(mat=mat2, pre=mQinv, tol=1e-10)
+                lams = EigenValues_Preconditioner(mat=mat2, pre=preM, tol=1e-10)
+                #print(lams)
+                print("###############################")
+                print("condition Shat", max(lams) / min(lams))
+                print("max(lams) = ", max(lams))
+                print("min(lams) = ", min(lams))
+                print("###############################")
+
                 it, t_prep, t_it = BramblePasciakCG(blfA, blfB, None, self.f.vec, g.vec, preA, preM, sol, initialize=False, tol=1e-10, maxsteps=400, rel_err=True, staticcond = (self.hodivfree and elinternal))
 
                 if self.hodivfree and elinternal:

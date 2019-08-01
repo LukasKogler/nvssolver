@@ -8,7 +8,7 @@ import sys
 sys.path.append('../')
 from NavierStokesSIMPLE_iterative import *
 
-
+ngsglobals.msg_level = 0
 from netgen.csg import *
 geo = CSGeometry()
 channel = OrthoBrick( Pnt(-1, 0, 0), Pnt(3, 0.41, 0.41) ).bc("wall")
@@ -21,9 +21,11 @@ mesh = Mesh( geo.GenerateMesh(maxh=0.1))
 mesh.Curve(3)
 Draw(mesh)
 
+ngsglobals.msg_level = 0
+
 SetHeapSize(100*1000*1000)
 timestep = 0.002
-cores = 4
+cores = 24
 SetNumThreads(cores)
 
 with TaskManager():
@@ -44,6 +46,7 @@ with TaskManager():
   print("dpcs_prep = ", dpcs_prep/100)
   print("dpcs_its = ", dpcs_its/100)
   print("dpcs = ", dpcs/100)
+  print("Norm(vel)", Integrate(navstokes.velocity*navstokes.velocity, mesh, VOL))
   print("###############################")
   #it.append(lit)
   

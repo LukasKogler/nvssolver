@@ -4,7 +4,6 @@ from math import sqrt
 from ngsolve import Projector, Norm
 from ngsolve.ngstd import Timer
 
-
 def harmonic_extension(f, blfA, inverse, staticcond,result=None):
     if result is None:
         result = inverse.CreateColVector()
@@ -83,7 +82,7 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
       Number of iterations the BCGP took
 
     """
-
+    
     if not staticcond: #blfA.condense:
         matA = (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension_trans) @ (blfA.mat + blfA.inner_matrix) @ (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension)
     else:
@@ -92,16 +91,21 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
     
     timer_prep = Timer("BPCG-Preparation")
     timer_prep.Start()
-
+    
     if (k ==0):
         timer_prepev = Timer("BPCG-Preparation-EV")
         timer_prepev.Start()
         lams = EigenValues_Preconditioner(mat=matA, pre=preA_unscaled, tol=1e-3)
         timer_prepev.Stop()
         # print("min", min(lams), "max", max(lams))
-        k = 1. / min(lams) + 1e-3
+        k = 1. / min(lams) #+ 1e-3
+
+        print("###############################")
         print("k = ", k)
-        print("condition", max(lams) / min(lams))
+        print("condition Ahat", max(lams) / min(lams))
+        print("max(lams) = ", max(lams))
+        print("min(lams) = ", min(lams))
+        print("###############################")
        
     # print("scale factor", k)
     preA = k * preA_unscaled
@@ -170,6 +174,7 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
     wdn = InnerProduct(w, d)
 
     err0 = sqrt(abs(wdn))
+
     print("err0", err0)
     s.data = w
 
@@ -182,6 +187,9 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
 
     matB_tranposed = matB.CreateTranspose()
 
+    timer_bmat = Timer("bmat_mult")
+    timer_amat = Timer("amat_mult")
+    
     for it in range(maxsteps):
         if it == 0:
             matA_s0.data = matA * s[0]
@@ -192,11 +200,15 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
         tmp0.data = matA_s0 + matB_s1
         # tmp1.data = preA * tmp0
         harmonic_extension(tmp0, blfA, preA, staticcond, result=tmp1)
+        timer_amat.Start()
         tmp2.data = matA * tmp1
-
+        timer_amat.Stop()
+        
         tmp4.data = tmp1 - s[0]
+        
+        timer_bmat.Start()
         tmp3.data = matB * tmp4
-
+        timer_bmat.Stop()
         z_old[0].data = z[0]
 
         # w.data = MatOp.K * s
@@ -226,7 +238,7 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
         s.data += w
 
         err = sqrt(abs(wd))
-        if printrates:
+        if printrates:            
             print("\rit = ", it, " err = ", err, " " * 20, end="")
         if err < tol * (err0 if rel_err else 1):
             break
