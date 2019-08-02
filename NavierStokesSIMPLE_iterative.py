@@ -6,6 +6,8 @@ from ngsolve.la import EigenValues_Preconditioner
 from bramblepasciak import BramblePasciakCG
 from ngsolve.ngstd import Timer
 
+import ngs_amg
+
 __all__ = ["NavierStokes"]
 
 realcompile = False
@@ -20,7 +22,7 @@ class NavierStokes:
         self.inflow = inflow
         self.outflow = outflow
         self.wall = wall
-        self.hodivfree = False
+        self.hodivfree = True
         self.order = order
         V = HDiv(mesh, order=order, dirichlet=inflow + "|" + wall, RT=False, hodivfree = self.hodivfree)
         self.V = V
@@ -59,7 +61,7 @@ class NavierStokes:
         else:
             def Skew2Vec(m):
                 return CoefficientFunction((m[0, 1] - m[1, 0], m[2, 0] - m[0, 2], m[1, 2] - m[2, 1]))
-
+            
         dS = dx(element_boundary=True)
         n = specialcf.normal(mesh.dim)
 
@@ -403,69 +405,98 @@ class NavierStokes:
                 #transform = (trafo @amixed.mat)
                 transform = (lo_to_high.T @ trafo)
                 #transform = trafo
+
+                #direct epseps+preconditioner
+                epseps = False
                 
-                if mesh.dim ==2 :
-                    uh1_1,vh1_1 = self.fesh1_1.TnT()
-                    uh1_2,vh1_2 = self.fesh1_2.TnT()
-                    aH1_1 = BilinearForm(self.fesh1_1)
+                if mesh.dim ==2 :                                        
+                    if epseps:
+                        (uh1_1,uh1_2),(vh1_1,vh1_2) = self.fesh1.TnT()
+                        
+                        grad_u = CoefficientFunction((grad(uh1_1),grad(uh1_2)), dims=(2,2))
+                        grad_v = CoefficientFunction((grad(vh1_1),grad(vh1_2)), dims=(2,2))
+
+                        eps_u = 0.5 * (grad_u + grad_u.trans)
+                        eps_v = 0.5 * (grad_v + grad_v.trans)
                     
-                    aH1_1 += 2*self.nu * InnerProduct(grad(uh1_1),grad(vh1_1)) * dx
-                    
-                    aH1_2 = BilinearForm(self.fesh1_2)
-                    aH1_2 += 2*self.nu * InnerProduct(grad(uh1_2),grad(vh1_2)) * dx
-                    
-                    if self.h1order > 1:
-                        preAh1_1 = Preconditioner(aH1_1, 'bddc', coarsetype="h1amg")
-                        preAh1_2 = Preconditioner(aH1_2, 'bddc', coarsetype="h1amg")
+                        aH1 = BilinearForm(self.fesh1)
+                        aH1 += 2 * self.nu * InnerProduct(eps_u,eps_v) * dx
+                        preAh1 = Preconditioner(aH1, 'direct', inverse = "sparsecholesky")
+                        aH1.Assemble()
                     else:
-                        #if mpi:
-                        #    preAh1_1 = Preconditioner(aH1_1, "ngs_amg.h1_scal", ngs_amg_log_level = 2, ngs_amg_log_file = "")
-                        #    preAh1_2 = Preconditioner(aH1_2, "ngs_amg.h1_scal", ngs_amg_log_level = 2, ngs_amg_log_file = "")
-                        #else:
-                        preAh1_1 = Preconditioner(aH1_1, 'h1amg')
-                        preAh1_2 = Preconditioner(aH1_2, 'h1amg')
-                        #preAh1_1 = Preconditioner(aH1_1, 'direct', inverse = "sparsecholesky")
-                        #preAh1_2 = Preconditioner(aH1_2, 'direct', inverse = "sparsecholesky")
+                        uh1_1,vh1_1 = self.fesh1_1.TnT()
+                        uh1_2,vh1_2 = self.fesh1_2.TnT()
+                        aH1_1 = BilinearForm(self.fesh1_1)                    
+                        aH1_1 += 2*self.nu * InnerProduct(grad(uh1_1),grad(vh1_1)) * dx
 
-                    aH1_1.Assemble()
-                    aH1_2.Assemble()
+                        aH1_2 = BilinearForm(self.fesh1_2)
+                        aH1_2 += 2*self.nu * InnerProduct(grad(uh1_2),grad(vh1_2)) * dx
 
-                    emb_comp1 = Embedding(self.fesh1.ndof,self.fesh1.Range(0))
-                    emb_comp2 = Embedding(self.fesh1.ndof,self.fesh1.Range(1))
+                        if self.h1order > 1:
+                            preAh1_1 = Preconditioner(aH1_1, 'bddc', coarsetype="h1amg")
+                            preAh1_2 = Preconditioner(aH1_2, 'bddc', coarsetype="h1amg")
+                        else:
+                            #if mpi:
+                            #preAh1_1 = Preconditioner(aH1_1, "ngs_amg.h1_scal", ngs_amg_log_level = 2, ngs_amg_log_file = "")
+                            #preAh1_2 = Preconditioner(aH1_2, "ngs_amg.h1_scal", ngs_amg_log_level = 2, ngs_amg_log_file = "")
+                            #else:
+                            preAh1_1 = Preconditioner(aH1_1, 'h1amg')
+                            preAh1_2 = Preconditioner(aH1_2, 'h1amg')
+                            #preAh1_1 = Preconditioner(aH1_1, 'direct', inverse = "sparsecholesky")
+                            #preAh1_2 = Preconditioner(aH1_2, 'direct', inverse = "sparsecholesky")
 
-                    preAh1 = emb_comp1 @ preAh1_1 @ emb_comp1.T + emb_comp2 @ preAh1_2 @ emb_comp2.T
-                    
+                        aH1_1.Assemble()
+                        aH1_2.Assemble()
+
+                        emb_comp1 = Embedding(self.fesh1.ndof,self.fesh1.Range(0))
+                        emb_comp2 = Embedding(self.fesh1.ndof,self.fesh1.Range(1))
+
+                        preAh1 = emb_comp1 @ preAh1_1 @ emb_comp1.T + emb_comp2 @ preAh1_2 @ emb_comp2.T
+                        
                 else:
-                    uh1_1,vh1_1 = self.fesh1_1.TnT()
-                    uh1_2,vh1_2 = self.fesh1_2.TnT()
-                    uh1_3,vh1_3 = self.fesh1_3.TnT()
-    
-                    aH1_1 = BilinearForm(self.fesh1_1)
-                    aH1_1 += 2*self.nu * InnerProduct(grad(uh1_1),grad(vh1_1)) * dx
+                    if epseps:
+                        (uh1_1,uh1_2, uh1_3),(vh1_1,vh1_2, vh1_3) = self.fesh1.TnT()
+                        grad_u = CoefficientFunction((grad(uh1_1),grad(uh1_2),grad(uh1_3)), dims=(3,3))
+                        grad_v = CoefficientFunction((grad(vh1_1),grad(vh1_2),grad(vh1_3)), dims=(3,3))
 
-                    aH1_2 = BilinearForm(self.fesh1_2)
-                    aH1_2 += 2*self.nu * InnerProduct(grad(uh1_2),grad(vh1_2)) * dx
-
-                    aH1_3 = BilinearForm(self.fesh1_3)
-                    aH1_3 += 2*self.nu * InnerProduct(grad(uh1_3),grad(vh1_3)) * dx
-
-                    if self.h1order > 1:
-                        preAh1_1 = Preconditioner(aH1_1, 'bddc', coarsetype="h1amg" )
-                        preAh1_2 = Preconditioner(aH1_2, 'bddc', coarsetype="h1amg" )
-                        preAh1_3 = Preconditioner(aH1_3, 'bddc', coarsetype="h1amg" )
-                    else:
-                        preAh1_1 = Preconditioner(aH1_1, 'h1amg')
-                        preAh1_2 = Preconditioner(aH1_2, 'h1amg')
-                        preAh1_3 = Preconditioner(aH1_3, 'h1amg')
-                    aH1_1.Assemble()
-                    aH1_2.Assemble()
-                    aH1_3.Assemble()
+                        eps_u = 0.5 * (grad_u + grad_u.trans)
+                        eps_v = 0.5 * (grad_v + grad_v.trans)
                     
-                    emb_comp1 = Embedding(self.fesh1.ndof,self.fesh1.Range(0))
-                    emb_comp2 = Embedding(self.fesh1.ndof,self.fesh1.Range(1))
-                    emb_comp3 = Embedding(self.fesh1.ndof,self.fesh1.Range(2))
-    
-                    preAh1 = emb_comp1 @ preAh1_1 @ emb_comp1.T + emb_comp2 @ preAh1_2 @ emb_comp2.T + emb_comp3 @ preAh1_3 @ emb_comp3.T
+                        aH1 = BilinearForm(self.fesh1)
+                        aH1 += 2 * self.nu * InnerProduct(eps_u,eps_v) * dx
+                        preAh1 = Preconditioner(aH1, 'direct', inverse = "sparsecholesky")
+                        aH1.Assemble()
+                    else:
+                        uh1_1,vh1_1 = self.fesh1_1.TnT()
+                        uh1_2,vh1_2 = self.fesh1_2.TnT()
+                        uh1_3,vh1_3 = self.fesh1_3.TnT()
+                    
+                        aH1_1 = BilinearForm(self.fesh1_1)
+                        aH1_1 += 2*self.nu * InnerProduct(grad(uh1_1),grad(vh1_1)) * dx
+
+                        aH1_2 = BilinearForm(self.fesh1_2)
+                        aH1_2 += 2*self.nu * InnerProduct(grad(uh1_2),grad(vh1_2)) * dx
+
+                        aH1_3 = BilinearForm(self.fesh1_3)
+                        aH1_3 += 2*self.nu * InnerProduct(grad(uh1_3),grad(vh1_3)) * dx
+
+                        if self.h1order > 1:
+                            preAh1_1 = Preconditioner(aH1_1, 'bddc', coarsetype="h1amg" )
+                            preAh1_2 = Preconditioner(aH1_2, 'bddc', coarsetype="h1amg" )
+                            preAh1_3 = Preconditioner(aH1_3, 'bddc', coarsetype="h1amg" )
+                        else:
+                            preAh1_1 = Preconditioner(aH1_1, 'h1amg')
+                            preAh1_2 = Preconditioner(aH1_2, 'h1amg')
+                            preAh1_3 = Preconditioner(aH1_3, 'h1amg')
+                        aH1_1.Assemble()
+                        aH1_2.Assemble()
+                        aH1_3.Assemble()
+
+                        emb_comp1 = Embedding(self.fesh1.ndof,self.fesh1.Range(0))
+                        emb_comp2 = Embedding(self.fesh1.ndof,self.fesh1.Range(1))
+                        emb_comp3 = Embedding(self.fesh1.ndof,self.fesh1.Range(2))
+
+                        preAh1 = emb_comp1 @ preAh1_1 @ emb_comp1.T + emb_comp2 @ preAh1_2 @ emb_comp2.T + emb_comp3 @ preAh1_3 @ emb_comp3.T
 
                 # BlockJacobi for H(div)-velocity space
                 blocks = []
@@ -545,13 +576,14 @@ class NavierStokes:
 
                 #Qinv = mp.mat.Inverse(self.Q.FreeDofs(), inverse="sparsecholesky")
                 #lams = EigenValues_Preconditioner(mat=mat2, pre=mQinv, tol=1e-10)
-                lams = EigenValues_Preconditioner(mat=mat2, pre=preM, tol=1e-10)
                 #print(lams)
-                print("###############################")
-                print("condition Shat", max(lams) / min(lams))
-                print("max(lams) = ", max(lams))
-                print("min(lams) = ", min(lams))
-                print("###############################")
+                if False:
+                    lams = EigenValues_Preconditioner(mat=mat2, pre=preM, tol=1e-10)
+                    print("###############################")
+                    print("condition Shat", max(lams) / min(lams))
+                    print("max(lams) = ", max(lams))
+                    print("min(lams) = ", min(lams))
+                    print("###############################")
 
                 it, t_prep, t_it = BramblePasciakCG(blfA, blfB, None, self.f.vec, g.vec, preA, preM, sol, initialize=False, tol=1e-10, maxsteps=400, rel_err=True, staticcond = (self.hodivfree and elinternal))
 
