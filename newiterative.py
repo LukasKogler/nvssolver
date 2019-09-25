@@ -4,7 +4,11 @@ from ngsolve.la import EigenValues_Preconditioner
 
 #from mt_global import *
 from bramblepasciak import BramblePasciakCG
+from minres import MyMinRes
+
 from ngsolve.ngstd import Timer
+
+from ngsolve.utils import TimeFunction
 
 #import ngs_amg
 
@@ -58,10 +62,11 @@ class NavierStokes:
                 self.X.SetCouplingType(i, COUPLING_TYPE.INTERFACE_DOF)
         self.v1dofs = self.X.Range(0)
 
-        #for iterative method        
-        for f in mesh.facets:
-            self.X2.SetCouplingType(V.GetDofNrs(f)[1], COUPLING_TYPE.WIREBASKET_DOF)
-            self.X2.SetCouplingType(V.ndof + Vhat.GetDofNrs(f)[1], COUPLING_TYPE.WIREBASKET_DOF)
+        #for iterative method
+        if True:
+            for f in mesh.facets:
+                self.X2.SetCouplingType(V.GetDofNrs(f)[1], COUPLING_TYPE.WIREBASKET_DOF)
+                self.X2.SetCouplingType(V.ndof + Vhat.GetDofNrs(f)[1], COUPLING_TYPE.WIREBASKET_DOF)
 
         if sym:
             u, uhat, sigma, W = self.X.TrialFunction()
@@ -209,7 +214,7 @@ class NavierStokes:
 
         self.bproj.Assemble()
         
-    def SolveInitial(self, timesteps=None, iterative=True, GS = True, use_bddc = False):
+    def SolveInitial(self, timesteps=None, iterative=True, GS = True, use_bddc = False, solver = "BPCG"):
         self.a.Assemble()
         self.f.Assemble()
 
@@ -219,6 +224,10 @@ class NavierStokes:
         if not timesteps:
 
             elinternal = True
+
+            if not elinternal:
+                raise Exception("please use elinternal!!!")
+            
             use_bddc = use_bddc
 
             if use_bddc:
@@ -263,7 +272,7 @@ class NavierStokes:
 
                 mesh = self.gfu.space.mesh
                 
-                Vlo = HDiv(mesh, order=1, hodivfree = self.hodivfree)
+                Vlo = HDiv(mesh, order=1) #, hodivfree = self.hodivfree)
                 Vhatlo = TangentialFacetFESpace(mesh, order=1)
 
                 if (self.h1order==1):
@@ -308,7 +317,7 @@ class NavierStokes:
                     vhatlo = vhat
                     lo_to_high = IdentityMatrix()
                 
-                ###### Trafo to H1 space ######
+                ###### Trafo from H1 space ######
                 #amixed = BilinearForm(trialspace=self.fesh1, testspace=self.X)
                 #acomp = BilinearForm(self.X)
                 amixed = BilinearForm(trialspace=self.fesh1, testspace=Xlo)
@@ -573,7 +582,8 @@ class NavierStokes:
                             self.jacobi.Smooth(y,x)
 
                             self.temp.data = x - self.mat * y
-                            y.data += ((transform @ preAh1 @ transform.T)) * self.temp            
+                            y.data += ((transform @ preAh1 @ transform.T)) * self.temp
+
 
                             self.jacobi.SmoothBack(y,x)
                             
@@ -598,12 +608,15 @@ class NavierStokes:
                 
                 sol = BlockVector([self.gfu.vec, self.gfup.vec])
 
-                if self.hodivfree and elinternal:
+                if (self.hodivfree and elinternal):
                     self.f.vec.data += blfA.harmonic_extension_trans * self.f.vec              
 
-                if not self.hodivfree:                    
-                    mat2 = blfB.mat @ (((IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension) @ (preA) @ (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension_trans)) + blfA.inner_solve ) @ blfB.mat.T
-                else:
+                if not self.hodivfree:
+                    #a_inv = blfA.mat.Inverse(self.X.FreeDofs(True), inverse = "umfpack")
+                    #mat2 = blfB.mat @ (((IdentityMatrix(blfA.mat.height) + blfA.harmonic_extension) @ (a_inv) @ (IdentityMatrix(blfA.mat.height) + blfA.harmonic_extension_trans)) + blfA.inner_solve ) @ blfB.mat.T
+                    # B \hat A ^ {-1} B^T
+                    mat2 = blfB.mat @ (((IdentityMatrix(blfA.mat.height) + blfA.harmonic_extension) @ (preA) @ (IdentityMatrix(blfA.mat.height) + blfA.harmonic_extension_trans)) + blfA.inner_solve ) @ blfB.mat.T
+                else:                    
                     mat2 = blfB.mat @ preA @ blfB.mat.T
                     
                     
@@ -618,18 +631,50 @@ class NavierStokes:
                     print("max(lams) = ", max(lams))
                     print("min(lams) = ", min(lams))
                     print("###############################")
-                    lams = EigenValues_Preconditioner(mat=blfA.mat, pre=preA, tol=1e-10)
                     
+                    lams = EigenValues_Preconditioner(mat=blfA.mat, pre=preA, tol=1e-10)                    
                     print("###############################")
                     print("condition Ahat", max(lams) / min(lams))
                     print("max(lams) = ", max(lams))
                     print("min(lams) = ", min(lams))
                     print("###############################")
-                    exit()
+                    #exit()
                     
-                it, t_prep, t_it = BramblePasciakCG(blfA, blfB, None, self.f.vec, g.vec, preA, preM, sol, initialize=False, tol=1e-10, maxsteps=400, rel_err=True, staticcond = (self.hodivfree and elinternal))
+                if solver == "BPCG":
+                    it, t_prep, t_it = BramblePasciakCG(blfA, blfB, None, self.f.vec, g.vec, preA, preM, sol, initialize=False, tol=1e-10, maxsteps=1000, rel_err=True, staticcond = (self.hodivfree and elinternal))
+                else:
+                    if not self.hodivfree:
+                        full_amat =  (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension_trans) @ (blfA.mat + blfA.inner_matrix) @ (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension)
+                        full_preA = ((IdentityMatrix(blfA.mat.height) + blfA.harmonic_extension) @ (preA) @ (IdentityMatrix(blfA.mat.height) + blfA.harmonic_extension_trans)) + blfA.inner_solve
+                    else:
+                        full_amat = blfA.mat
+                        full_preA = preA
+                        
+                    big_blf = BlockMatrix([[full_amat,blfB.mat.T],
+                                               [blfB.mat,None]])
+                    
+                    big_rhs = BlockVector([self.f.vec, g.vec])
 
-                if self.hodivfree and elinternal:
+                    if solver == "MinRes":
+                        big_pre = BlockMatrix([[full_preA,None],
+                                               [None,preM]])
+                    
+                        it, t_prep, t_it = MyMinRes(mat=big_blf, rhs=big_rhs, sol=sol, pre=big_pre, initialize=False, maxsteps=1000, tol = 1e-10, printrates = True)
+                    elif solver == "GMRes":
+                        pre_offdiag = None # -preM @ blfB.mat @ full_preA
+                        big_pre = BlockMatrix([[full_preA,None],
+                                               [ pre_offdiag ,preM]])
+                        
+                        it, t_prep, t_it = (1,1,1)
+                        timer_gmres = Timer("Timer-GMRes")
+                        timer_gmres.Start()
+                        solvers.GMRes(A=big_blf, b=big_rhs, x=sol, pre=big_pre, maxsteps=1000, tol = 1e-10, printrates = True)
+                        timer_gmres.Stop()
+                        t_it = timer_gmres.time
+                    else:
+                        raise Exception("solver not available")
+                    
+                if (self.hodivfree and elinternal):
                     self.gfu.vec.data +=blfA.inner_solve * self.f.vec
                     self.gfu.vec.data +=blfA.harmonic_extension * self.gfu.vec
                 

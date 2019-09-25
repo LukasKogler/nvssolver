@@ -83,22 +83,16 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
 
     """
     
-    if not staticcond: #blfA.condense:
-        matA = (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension_trans) @ (blfA.mat + blfA.inner_matrix) @ (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension)
-    else:
-        matA = blfA.mat
-    matB = blfB.mat
-    
     timer_prep = Timer("BPCG-Preparation")
     timer_prep.Start()
-    
+
     if (k ==0):
         timer_prepev = Timer("BPCG-Preparation-EV")
         timer_prepev.Start()
-        lams = EigenValues_Preconditioner(mat=matA, pre=preA_unscaled, tol=1e-3)
+        lams = EigenValues_Preconditioner(mat=blfA.mat, pre=preA_unscaled, tol=1e-10)
         timer_prepev.Stop()
         # print("min", min(lams), "max", max(lams))
-        k = 1. / min(lams) #+ 1e-3
+        k = 1. / (min(lams))
 
         print("###############################")
         print("k = ", k)
@@ -106,7 +100,26 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
         print("max(lams) = ", max(lams))
         print("min(lams) = ", min(lams))
         print("###############################")
-       
+        
+    
+    if not staticcond: #blfA.condense:
+        matA = (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension_trans) @ (blfA.mat + blfA.inner_matrix) @ (IdentityMatrix(blfA.mat.height) - blfA.harmonic_extension)
+    else:
+        matA = blfA.mat
+    matB = blfB.mat
+
+    '''
+    big_preA = ((IdentityMatrix(blfA.mat.height) + blfA.harmonic_extension) @ (preA_unscaled) @ (IdentityMatrix(blfA.mat.height) + blfA.harmonic_extension_trans)) + blfA.inner_solve
+    
+    lams = EigenValues_Preconditioner(mat=matA, pre=big_preA, tol=1e-10)
+    print("###############################")    
+    print("condition Ahat", max(lams) / min(lams))
+    print("max(lams) = ", max(lams))
+    print("min(lams) = ", min(lams))
+    print("###############################")
+    exit()
+    '''
+    
     # print("scale factor", k)
     preA = k * preA_unscaled
 
@@ -115,6 +128,7 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
     # tmp0.data = preA * f
     #tmp0 = harmonic_extension(f, blfA, preA)
     tmp0 = f.CreateVector()
+    tmp0[:] = 0
     harmonic_extension(f, blfA, preA, staticcond, result = tmp0)
     f_new.data = matA * tmp0 - f
 
@@ -128,23 +142,36 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
         u[:] = 0.0
 
     d = rhs.CreateVector()
+    d[:]=0
     w = rhs.CreateVector()
+    w[:]=0
     v = rhs.CreateVector()
+    v[:]=0
     z = rhs.CreateVector()
+    z[:]=0
     z_old = rhs.CreateVector()
+    z_old[:]=0
     s = rhs.CreateVector()
+    s[:]=0
 
     # MatOp = BP_Matrices(preA, matA, matB, preM)
 
     # MatOp.update(u)
-    tmp0 = blfA.mat.CreateColVector()
+    #tmp0 = blfA.mat.CreateColVector()
+    #tmp0[:] = 0
     #tmp1 = preA.CreateColVector()
     tmp1 = blfA.mat.CreateColVector()
+    tmp1[:] = 0
     tmp2 = blfA.mat.CreateColVector()
+    tmp2[:] = 0
     tmp3 = matB.CreateColVector()
+    tmp3[:] = 0
     tmp4 = tmp1.CreateVector()
+    tmp4[:] = 0
     matA_s0 = blfA.mat.CreateColVector()
+    matA_s0[:] = 0
     matB_s1 = matB.CreateRowVector()
+    matB_s1[:] = 0
 
     tmp0.data = matA * u[0] + matB.T * u[1]
     # tmp1.data = preA * tmp0
@@ -159,10 +186,12 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
     d[1].data = rhs[1] - tmp3
 
     pr = rhs.CreateVector()
+    pr[:] = 0
     harmonic_extension(f, blfA, preA, staticcond, pr[0])
     # pr[0].data = preA * f
 
     tmp5 = matB.CreateColVector()
+    tmp5[:] = 0
     tmp5.data = matB * pr[0] - g
 
     pr[1].data = preM * tmp5
@@ -180,15 +209,17 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
 
     if wdn == 0:
         return u
-
+    
+    matB_tranposed = matB.CreateTranspose()
+    
     timer_prep.Stop()
     timer_its = Timer("BPCG-Iterations")
-    timer_its.Start()
-
-    matB_tranposed = matB.CreateTranspose()
+    timer_its.Start()   
 
     timer_bmat = Timer("bmat_mult")
     timer_amat = Timer("amat_mult")
+
+    error_arr = []
     
     for it in range(maxsteps):
         if it == 0:
@@ -238,8 +269,10 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
         s.data += w
 
         err = sqrt(abs(wd))
+        error_arr.append((it,err))
         if printrates:            
             print("\rit = ", it, " err = ", err, " " * 20, end="")
+            #print("it = ", it, " err = ", err, " " * 20, end="\n")
         if err < tol * (err0 if rel_err else 1):
             break
     else:
@@ -247,4 +280,6 @@ def BramblePasciakCG(blfA, blfB, matC, f, g, preA_unscaled, preM, sol=None, tol=
 
     timer_its.Stop()
     print("\n")
+    import pickle
+    pickle.dump(error_arr, open("pickle.out", "wb"))    
     return it, timer_prep.time, timer_its.time
