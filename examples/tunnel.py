@@ -16,20 +16,14 @@ geo.AddCircle((0.2, 0.2), r=0.05, leftdomain=0, rightdomain=1, bc="cyl")
 
 ngsglobals.msg_level = 0
 mesh = Mesh(geo.GenerateMesh(maxh=0.1))
-
-VD = VectorH1(mesh, order = 1)
-gfd = GridFunction(VD)
-alpha = 0
-gfd.Set(CoefficientFunction((alpha * x,0))) 
 mesh.Curve(3)
-mesh.SetDeformation(gfd)
 
 ngsglobals.msg_level = 2
 
 SetHeapSize(100 * 1000 * 100)
 timestep = 1e-3
 
-order = 8
+order = 5
 
 it = []
 
@@ -37,7 +31,7 @@ cores = 4
 SetNumThreads(cores)
 for i in range(1):
  with TaskManager(): #pajetrace = 1000*1000*1000):
-    hodivfree = False
+    hodivfree = True
     GS = True
     bddc= False
     
@@ -51,7 +45,7 @@ for i in range(1):
     #solver = "BPCG"
     solver = "MinRes"
     #solver = "GMRes"
-    lit, lt_prep, lt_its, ndof = navstokes.SolveInitial(iterative=True, GS = GS,use_bddc = bddc, solver = solver)
+    lit, lt_prep, lt_its, ndof = navstokes.SolveInitial(iterative=True, GS = GS,use_bddc = bddc, solver = solver, blocktype = 1)
     print("###############################")
     print("lt_prep = ", lt_prep)
     print("lt_its = ", lt_its)
