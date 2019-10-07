@@ -1,6 +1,6 @@
 from ngsolve import *
 #from ngsolve.krylovspace import MinRes
-from ngsolve.la import EigenValues_Preconditioner
+from ngsolve.la import EigenValues_Preconditioner, ChebyshevIteration
 
 #from mt_global import *
 from bramblepasciak import BramblePasciakCG
@@ -214,7 +214,7 @@ class NavierStokes:
 
         self.bproj.Assemble()
         
-    def SolveInitial(self, timesteps=None, iterative=True, GS = True, use_bddc = False, solver = "BPCG"):
+    def SolveInitial(self, timesteps=None, iterative=True, GS = True, use_bddc = False, solver = "BPCG", blocktype = 1, lo_inv = "auxh1", divdivpen = 1):
         self.a.Assemble()
         self.f.Assemble()
 
@@ -251,18 +251,20 @@ class NavierStokes:
                 
                 blfA = BilinearForm(self.X, eliminate_hidden=True, condense=elinternal, store_inner = store_inner)
                 blfA += self.stokesA
-                blfA += self.V_trace
+                blfA += divdivpen*self.V_trace
+
 
                 if use_bddc:                    
                     hdiv_bddc = Preconditioner(blfA, type = "bddc")
 
+                    
                 blfA.Assemble()
                 
                 g = LinearForm(self.Q)
                 g.Assemble()
 
                 mp = BilinearForm(self.Q)
-                mp +=  1/self.nu * p * q * dx
+                mp +=  1/(self.nu*divdivpen) * p * q * dx
                 preM = Preconditioner(mp, 'local')
                 mp.Assemble()
 
@@ -453,12 +455,14 @@ class NavierStokes:
                         
                         grad_u = CoefficientFunction((grad(uh1_1),grad(uh1_2)), dims=(2,2))
                         grad_v = CoefficientFunction((grad(vh1_1),grad(vh1_2)), dims=(2,2))
-
+                        div_u = grad_u[0,0] + grad_u[1,1]
+                        div_v = grad_v[0,0] + grad_v[1,1]
                         eps_u = 0.5 * (grad_u + grad_u.trans)
                         eps_v = 0.5 * (grad_v + grad_v.trans)
                     
                         aH1 = BilinearForm(self.fesh1)
                         aH1 += self.nu * InnerProduct(eps_u,eps_v) * dx
+                        #aH1 += (self.nu * InnerProduct(grad_u,grad_v) + self.nu*1e6 * div_u*div_v) * dx
                         preAh1 = Preconditioner(aH1, 'direct', inverse = "sparsecholesky")
                         aH1.Assemble()
                     else:
@@ -539,19 +543,87 @@ class NavierStokes:
 
                 # BlockJacobi for H(div)-velocity space
                 blocks = []
-                for e in mesh.facets:
-                    blocks.append ( [d for d in self.X.GetDofNrs(e) if self.X.FreeDofs(elinternal)[d]])
+                #blocktype = 1
+                if blocktype == 1:
+                    for e in mesh.facets:
+                        blocks.append ( [d for d in self.X.GetDofNrs(e) if self.X.FreeDofs(elinternal)[d]])                    
+                            
+                elif blocktype == 2:
+                    for e in mesh.Elements():
+                        el_block = []                        
+                        for f in e.facets:
+                            el_block += [d for d in self.X.GetDofNrs(f) if self.X.FreeDofs(elinternal)[d]]
+                        blocks.append(el_block)                        
+                elif blocktype == 3:                    
+                    for v in mesh.vertices:
+                        el_block = []
+                        if mesh.dim == 2:
+                            for e in v.edges:
+                                el_block += [d for d in self.X.GetDofNrs(e) if self.X.FreeDofs(elinternal)[d]]
+                        else:
+                            for e in v.faces:
+                                el_block += [d for d in self.X.GetDofNrs(e) if self.X.FreeDofs(elinternal)[d]]
+                        blocks.append ( el_block)
+                elif blocktype == 4:
+                    for e in mesh.edges:
+                        el_block = []
+                        for f in e.faces:
+                            el_block += [d for d in self.X.GetDofNrs(f) if self.X.FreeDofs(elinternal)[d]]
+                        blocks.append ( el_block)
+                
                 blocks = [x for x in blocks if len(x)]
+
+
+                lin_dofs = BitArray(self.X.ndof)
+                lin_dofs.Clear()
+                #lin_dofs2 = BitArray(self.X.ndof)
+                #lin_dofs2.Clear()
+                
+                #for i in ind:
+                #    if self.X.FreeDofs(elinternal)[i]:
+                #        lin_dofs2.Set(i)
+                
+                #print(lin_dofs2)
+
+                hdiv_offset = (self.order+1)*(self.order)//2
+                
+                for f in mesh.facets:
+                    dofs = self.V.GetDofNrs(f)
+                    fac_dofs = self.Vhat.GetDofNrs(f)
+
+                    if mesh.dim == 2:
+                        if self.X.FreeDofs(elinternal)[dofs[0]]:
+                            lin_dofs.Set(dofs[0])
+                            lin_dofs.Set(dofs[1])
+                        if self.X.FreeDofs(elinternal)[fac_dofs[0]+self.V.ndof]:
+                            lin_dofs.Set(fac_dofs[0]+self.V.ndof)
+                            lin_dofs.Set(fac_dofs[1]+self.V.ndof)
+                    else:
+                        if self.X.FreeDofs(elinternal)[dofs[0]]:
+                            lin_dofs.Set(dofs[0])
+                            lin_dofs.Set(dofs[1])
+                            lin_dofs.Set(dofs[1+hdiv_offset])
+                            
+                        if self.X.FreeDofs(elinternal)[fac_dofs[0]+self.V.ndof]:
+                            for i in range(4):
+                                lin_dofs.Set(fac_dofs[i]+self.V.ndof)
+                            facet_offset = self.order #actually order+1 but facet order is set to order-1
+                            lin_dofs.Set(fac_dofs[2*facet_offset]+self.V.ndof)
+                            lin_dofs.Set(fac_dofs[2*facet_offset+1]+self.V.ndof)
+
+                ####
                 
                 
                 class MypreA(BaseMatrix):
-                    def __init__ (self, space, a, jacblocks, GS):                        
+                    def __init__ (self, space, a, jacblocks, GS, loinv):                        
                         super(MypreA, self).__init__()
                         self.space = space
                         self.mat = a.mat
                         self.temp = a.mat.CreateColVector()
                         self.GS = GS
 
+                        
+                        self.loinv = loinv
                         #have to switch to full diagonal if no el internal
                         if not elinternal:
                             self.jacobi = a.mat.CreateSmoother(a.space.FreeDofs())
@@ -563,6 +635,9 @@ class NavierStokes:
                                 # Jacobi, diagonal...                                
                                 self.jacobi = a.mat.CreateSmoother(a.space.FreeDofs(True))
 
+                        print("WARNING: eigvals for cheby hardcoded!!!")
+                        self.cheby = ChebyshevIteration(pre = self.jacobi,mat = self.mat, steps = 5, lam_min = 1-3.8, lam_max = 1-0.007)
+                        
                     def Mult(self, x, y):
                         if self.GS:
                             '''
@@ -582,16 +657,24 @@ class NavierStokes:
                             self.jacobi.Smooth(y,x)
 
                             self.temp.data = x - self.mat * y
-                            y.data += ((transform @ preAh1 @ transform.T)) * self.temp
+                            y.data += self.loinv * self.temp
+                            #y.data += ((transform @ preAh1 @ transform.T)) * self.temp
 
 
                             self.jacobi.SmoothBack(y,x)
                             
                         else:
-                            #y[:] = 0
-                            y.data = ((transform @ preAh1 @ transform.T) + self.jacobi) * x
+                            
+                            #y.data = (self.loinv + self.jacobi) * x
+                            
+                            y.data = (self.loinv + self.cheby) * x
+                            #self.temp.data = x - self.mat * y
+                            #y.data += (self.loinv) * self.temp
+                            #self.temp.data = x - self.mat * y
+                            #y.data += (self.cheby) * self.temp
+                            #y.data = (1/2*self.loinv + 1/12*self.jacobi) * x
                             #y.data = self.jacobi * x
-
+                            
                     def Height(self):
                         return self.space.ndof
 
@@ -604,8 +687,13 @@ class NavierStokes:
                 if use_bddc:
                     preA = hdiv_bddc
                 else:
-                    preA = MypreA(self.X, blfA, blocks, GS = GS)
-                
+                    if lo_inv == "auxh1":
+                        auxh1 = ((transform @ preAh1 @ transform.T))
+                        preA = MypreA(self.X, blfA, blocks, GS = GS, loinv = auxh1)
+                    elif lo_inv == "Aloinv":                        
+                        A_loinv = blfA.mat.Inverse(lin_dofs, inverse = "sparsecholesky")
+                        preA = MypreA(self.X, blfA, blocks, GS = GS, loinv = A_loinv)
+                        
                 sol = BlockVector([self.gfu.vec, self.gfup.vec])
 
                 if (self.hodivfree and elinternal):
@@ -626,6 +714,9 @@ class NavierStokes:
                 #print(lams)
                 if True:                                        
                     lams = EigenValues_Preconditioner(mat=mat2, pre=preM, tol=1e-10)
+                    import pickle
+                    pickle.dump([l for l in lams], open("lams.out", "wb"))  
+                    print(lams)
                     print("###############################")
                     print("condition Shat", max(lams) / min(lams))
                     print("max(lams) = ", max(lams))
@@ -655,6 +746,7 @@ class NavierStokes:
                     
                     big_rhs = BlockVector([self.f.vec, g.vec])
 
+                    SetNumThreads(4)
                     if solver == "MinRes":
                         big_pre = BlockMatrix([[full_preA,None],
                                                [None,preM]])
