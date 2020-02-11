@@ -20,7 +20,7 @@ class FlowOptions:
 
         # BCs
         self.inflow = inflow
-        self.uin = 0 if uin is None else uin
+        self.uin = uin
         self.outflow = outflow
         self.wall_slip = wall_slip
         self.wall_noslip = wall_noslip
@@ -58,9 +58,9 @@ class MCS:
 
         if self.sym:
             if settings.mesh.dim == 2:
-                self.S = ngs.L2(settings.mesh, order=self.order if self.RT else order - 1)
+                self.S = ngs.L2(settings.mesh, order=self.order if self.RT else order-1)
             else:
-                self.S = ngs.VectorL2(settings.mesh, order=self.order if self.RT else order - 1)
+                self.S = ngs.VectorL2(settings.mesh, order=self.order if self.RT else order-1)
         else:
             self.S = None
 
@@ -78,9 +78,10 @@ class MCS:
         else:
             self.X = ngs.FESpace([self.V, self.Vhat, self.Sigma])
 
-        # Forms
-        dS = ngs.dx(element_boundary=True)
+        dS = ngs.dx(element_vb = ngs.BND)
         n = ngs.specialcf.normal(settings.mesh.dim)
+        def Compile (term):
+            return term.Compile(realcompile = self.truecompile, wait = True)
         def tang(u):
             return u - (u * n) * n
         if settings.mesh.dim == 2:
@@ -90,61 +91,71 @@ class MCS:
             def Skew2Vec(m):
                 return ngs.CoefficientFunction((m[0, 1] - m[1, 0], m[2, 0] - m[0, 2], m[1, 2] - m[2, 1]))
 
-        if self.sym:
-            u, uhat, sigma, W = self.X.TrialFunction()
-            v, vhat, tau, R = self.X.TestFunction()
-        else:
-            u, uhat, sigma = self.X.TrialFunction()
-            v, vhat, tau = self.X.TestFunction()
-        p, q = self.Q.TnT()
-
-        def Compile (term):
-            return term.Compile(realcompile = self.truecompile, wait = True)
-
-        a_vol_cf = -1 / settings.nu * ngs.InnerProduct(sigma, tau) + ngs.div(sigma) * v + ngs.div(tau) * u
-        if self.sym:
-            a_vol_cf += (ngs.InnerProduct(W, Skew2Vec(tau)) + ngs.InnerProduct(R, Skew2Vec(sigma)))
-        a_bnd_cf = (-((sigma * n) * n) * (v * n) - ((tau * n) * n) * (u * n)) + \
-                   (-(sigma * n) * tang(vhat) - (tau * n) * tang(uhat))
-        b_vol_cf = ngs.div(u)*q
-        bt_vol_cf = ngs.div(v)*p
-
-        self.stokesA = Compile(a_vol_cf) * ngs.dx + Compile(a_bnd_cf) * dS
-
-        self.stokesB = Compile(b_vol_cf) * ngs.dx
-        self.stokesBT = Compile(bt_vol_cf) * ngs.dx
-
-        # self.stokesA = -1 / settings.nu * ngs.InnerProduct(sigma, tau) * ngs.dx + \
-        #                (ngs.div(sigma) * v + ngs.div(tau) * u) * ngs.dx + \
-        #                (-((sigma * n) * n) * (v * n) - ((tau * n) * n) * (u * n)) * dS + \
-        #                (-(sigma * n) * tang(vhat) - (tau * n) * tang(uhat)) * dS
+        # # Forms - Block version
         # if self.sym:
-        #     self.stokesA += (ngs.InnerProduct(W, Skew2Vec(tau)) + ngs.InnerProduct(R, Skew2Vec(sigma))) * ngs.dx
-        # self.stokesB = ngs.div(u) * q * ngs.dx
-        # self.stokesBT = ngs.div(v) * p * ngs.dx
+        #     u, uhat, sigma, W = self.X.TrialFunction()
+        #     v, vhat, tau, R = self.X.TestFunction()
+        # else:
+        #     u, uhat, sigma = self.X.TrialFunction()
+        #     v, vhat, tau = self.X.TestFunction()
+        # p, q = self.Q.TnT()
+
+        # a_vol_cf = -1 / settings.nu * ngs.InnerProduct(sigma, tau) + ngs.div(sigma) * v + ngs.div(tau) * u
+        # if self.sym:
+        #     a_vol_cf += (ngs.InnerProduct(W, Skew2Vec(tau)) + ngs.InnerProduct(R, Skew2Vec(sigma)))
+        # a_bnd_cf = (-((sigma * n) * n) * (v * n) - ((tau * n) * n) * (u * n)) + \
+        #            (-(sigma * n) * tang(vhat) - (tau * n) * tang(uhat))
+        # b_vol_cf = ngs.div(u)*q
+        # bt_vol_cf = ngs.div(v)*p
+
+        # self.stokesA = Compile(a_vol_cf) * ngs.dx + Compile(a_bnd_cf) * dS
+        # self.stokesB = Compile(b_vol_cf) * ngs.dx
+        # self.stokesBT = Compile(bt_vol_cf) * ngs.dx
+
+        # if settings.vol_force is not None:
+        #     self.stokesf = settings.vol_force * v * ngs.dx
+        # else:
+        #     self.stokesf = None
+
+        # Forms - One big compound space
+        if self.sym:
+            self.Xext = ngs.CompressCompound(ngs.FESpace([self.V, self.Vhat, self.Sigma, self.S, self.Q]))
+            u, uhat, sigma, W, p = self.Xext.TrialFunction()
+            v, vhat, tau, R, q = self.Xext.TestFunction()
+        else:
+            self.Xext = ngs.CompressCompound(ngs.FESpace([self.V, self.Vhat, self.Sigma , self.Q]))
+            u, uhat, sigma, p = self.Xext.TrialFunction()
+            v, vhat, tau, q = self.Xext.TestFunction()
+
+        # self.Xext = ngs.FESpace( [self.X, self.Q] )
+        # if self.sym:
+        #     (u, uhat, sigma, W), p = self.Xext.TrialFunction()
+        #     (v, vhat, tau, R), q = self.Xext.TestFunction()
+        # else:
+        #     (u, uhat, sigma), p = self.Xext.TrialFunction()
+        #     (v, vhat, tau), q = self.Xext.TestFunction()
+
+        print("Xext ranges :")
+        for k,x in enumerate(self.Xext.components):
+            print(self.Xext.Range(k).start, self.Xext.Range(k).stop)
+            
+        aex_vol_cf = -1 / settings.nu * ngs.InnerProduct(sigma, tau) \
+                     + ngs.div(sigma) * v \
+                     + ngs.div(tau) * u
+        if self.sym:
+            aex_vol_cf += ngs.InnerProduct(W, Skew2Vec(tau)) \
+                          + ngs.InnerProduct(R, Skew2Vec(sigma))
+        aex_bnd_cf = - ((sigma * n) * n) * (v * n) \
+                     - ((tau * n) * n) * (u * n) \
+                     - (sigma * n) * tang(vhat) \
+                     - (tau * n) * tang(uhat)
+        bex_vol_cf = ngs.div(u) * q
+        btex_vol_cf = ngs.div(v) * p
 
         if settings.vol_force is not None:
             self.stokesf = settings.vol_force * v * ngs.dx
         else:
             self.stokesf = None
-
-        # for non-block matrices
-        self.Xext = ngs.FESpace( [self.X, self.Q] )
-
-        if self.sym:
-            (u, uhat, sigma, W), p = self.Xext.TrialFunction()
-            (v, vhat, tau, R), q = self.Xext.TestFunction()
-        else:
-            (u, uhat, sigma), p = self.Xext.TrialFunction()
-            (v, vhat, tau), q = self.Xext.TestFunction()
-            
-        aex_vol_cf = -1 / settings.nu * ngs.InnerProduct(sigma, tau) + ngs.div(sigma) * v + ngs.div(tau) * u
-        if self.sym:
-            aex_vol_cf += (ngs.InnerProduct(W, Skew2Vec(tau)) + ngs.InnerProduct(R, Skew2Vec(sigma)))
-        aex_bnd_cf = (-((sigma * n) * n) * (v * n) - ((tau * n) * n) * (u * n)) + \
-                   (-(sigma * n) * tang(vhat) - (tau * n) * tang(uhat))
-        bex_vol_cf = ngs.div(u)*q
-        btex_vol_cf = ngs.div(v)*p
 
         self.stokesM = Compile(aex_vol_cf + bex_vol_cf + btex_vol_cf) * ngs.dx + Compile(aex_bnd_cf) * dS
             
@@ -167,6 +178,19 @@ class StokesTemplate():
             if (self.block_la == True) and (pc_ver == "direct"):
                 raise "For direct solve, use block_la = False!"
 
+            if self.block_la:
+                self.gfu = ngs.GridFunction(stokes.disc.X)
+                self.velocity = self.gfu.components[0]
+                self.p = ngs.GridFunction(stokes.disc.Q)
+                self.pressure = self.p
+                self.sol_vec = ngs.BlockVector([self.gfu.vec,
+                                                self.pressure.vec])
+            else:
+                self.gfu = ngs.GridFunction(stokes.disc.Xext)
+                self.velocity = self.gfu.components[0]
+                self.pressure = self.gfu.components[-1]
+                self.sol_vec = self.gfu.vec
+            
             self._to_assemble = []
 
             self.SetUpFWOps(stokes)
@@ -192,26 +216,29 @@ class StokesTemplate():
             
             self.pc_avail = {"direct" : lambda astokes, opts : self.SetUpDirect(astokes, **opts),
                              "aux" : lambda astokes, opts: self.SetUpAux(astokes, **opts),
-                             "facet_aux" : lambda astokes, opts: self.SetUpFacetAux(astokes, **opts) }
+                             "facet_aux" : lambda astokes, opts: self.SetUpFacetAux(astokes, **opts),
+                             "none" : lambda astokes, opts : self.SetUpDummy(astokes, **opts) }
             if not pc_ver in self.pc_avail:
                 raise "invalid PC version!"
             else:
                 self.pc_avail[pc_ver](stokes, pc_opts)
-            
+
+        def SetUpDummy(self, stokes, **kwargs):
+            self.Mpre = ngs.Projector(stokes.disc.Xext.FreeDofs(self.elint), True)
+                
         def SetUpFWOps(self, stokes):
             # Forward operators
             if self.block_la:
-                self.a = ngs.BilinearForm(stokes.disc.X, eliminate_internal = self.elint)
+                self.a = ngs.BilinearForm(stokes.disc.X, eliminate_internal = self.elint, eliminate_hidden = True)
                 self.a += stokes.disc.stokesA
 
-                self.b = ngs.BilinearForm(trialspace = stokes.disc.X, testspace = stokes.disc.Q,
-                                          eliminate_internal = self.elint)
+                self.b = ngs.BilinearForm(trialspace = stokes.disc.X, testspace = stokes.disc.Q)
                 self.b += stokes.disc.stokesB
 
                 self._to_assemble += [self.a, self.b]
 
             else:
-                self.m = ngs.BilinearForm(stokes.disc.Xext, eliminate_internal = self.elint)
+                self.m = ngs.BilinearForm(stokes.disc.Xext, eliminate_internal = self.elint, eliminate_hidden = stokes.disc.compress)
                 self.m += stokes.disc.stokesM
 
                 self._to_assemble += [ self.m ]
@@ -239,9 +266,9 @@ class StokesTemplate():
             if self.block_la:
                 raise "Cannot invert block matrices!"
             else:
-                print("MAT, ", self.m.mat)
+                # print("MAT, ", self.m.mat)
                 itype = "umfpack" if inv_type is None else inv_type
-                self.precond = self.m.mat.Inverse(stokes.disc.Xext.FreeDofs(self.elint), inverse = itype)
+                self.Mpre = self.M.Inverse(stokes.disc.Xext.FreeDofs(self.elint), inverse = itype)
             
         def SetUpAux(self, stokes):
             raise "TODO!"
@@ -258,8 +285,6 @@ class StokesTemplate():
             self.Mpre = ngs.BlockMatrix( [ [self.Apre, None,
                                             None, self.Spre] ] )
 
-
-        
 
         def SetUpFacetAux(self, stokes):
             raise "TODO!"
@@ -284,7 +309,6 @@ class StokesTemplate():
                 print("ass ", x)
                 x.Assemble()
 
-
     def __init__(self, flow_settings = None, flow_opts = None, disc = None, disc_opts = None, sol_opts = None):
 
         # mesh, geometry, physical parameters 
@@ -306,13 +330,32 @@ class StokesTemplate():
         # linalg, preconditioner
         self.InitLinAlg(sol_opts)
 
+        self.velocity = self.la.velocity
+        self.pressure = self.la.pressure
             
     def InitLinAlg(self, sol_opts = None):
         if sol_opts is None:
             sol_opts = dict()
-        self.linalg_stuff = self.LinAlg(self, **sol_opts)
+        self.la = self.LinAlg(self, **sol_opts)
         
     def AssembleLinAlg(self):
-        self.linalg_stuff.Assemble()
+        self.la.Assemble()
+
+    def Solve(self, tol = 1e-8, ms = 1000):
+
+        if self.settings.uin is not None and len(self.settings.inflow)>0:
+            self.velocity.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inflow))
+            self.la.rhs.data -= self.la.M * self.la.sol_vec
+        
+        sv2 = self.la.sol_vec.CreateVector()
+
+        ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, pre = self.la.Mpre,
+                          tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
+
+        #ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, freedofs = self.disc.Xext.FreeDofs(),
+        #                  tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps = ms)
+
+        self.la.sol_vec.data += sv2
+
 
 ### END Stokes Template ###
