@@ -212,6 +212,16 @@ class StokesTemplate():
             self.block_la = block_la
             self.elint = elint
 
+            self.pc_avail = { "direct" : lambda astokes, opts : self.SetUpDirect(astokes, **opts),
+                              "block" : lambda astokes, opts : self.SetUpBlock(astokes, **opts),
+                              "none" : lambda astokes, opts : self.SetUpDummy(astokes) }
+
+            self.pc_a_avail = { "direct" : lambda astokes, opts : self.SetUpADirect(astokes, **opts),
+                                "auxh1" : lambda astokes, opts : self.SetUpAAux(astokes, **opts),
+                                "auxfacet" : lambda astokes, opts : self.SetUpAFacet(astokes, **opts) }
+
+
+            
             print("block_la ", self.block_la)
             
             if (self.block_la == True) and (pc_ver == "direct"):
@@ -255,15 +265,13 @@ class StokesTemplate():
                 self.M = self.m.mat
                 self.rhs = self.f.vec
                                            
-            
-            self.pc_avail = { "direct" : lambda astokes, opts : self.SetUpDirect(astokes, **opts),
-                              "block" : lambda astokes, opts : self.SetUpBlock(astokes, **opts),
-                              "none" : lambda astokes, opts : self.SetUpDummy(astokes) }
             if not pc_ver in self.pc_avail:
                 raise "invalid PC version!"
             else:
                 self.pc_avail[pc_ver](stokes, pc_opts)
 
+
+                
         def SetUpFWOps(self, stokes):
             # Forward operators
             if self.block_la:
@@ -313,7 +321,7 @@ class StokesTemplate():
                 itype = "umfpack" if inv_type is None else inv_type
                 self.Mpre = self.M.Inverse(stokes.disc.Xext.FreeDofs(self.elint), inverse = itype)
             
-        def SetUpBlock(self, stokes, a_opts = { "a_pc_ver" : "direct" } , **kwargs):
+        def SetUpBlock(self, stokes, a_opts = { "type" : "direct" } , **kwargs):
             if not self.block_la:
                 raise "block-PC with big compond space todo"
             else:
@@ -324,14 +332,39 @@ class StokesTemplate():
 
                 self.massp.Assemble()
 
-                ainvt = "sparsecholesky" if stokes.disc.compress else "umfpack"
-                if "inv_type" in a_opts:
-                    ainvt = a_opts["inv_type"]
-                self.Apre = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = ainvt)
-                
+                aver = a_opts["type"] if "type" in a_opts else "direct"
+                if aver in self.pc_a_avail:
+                    print("aver", aver)
+                    self.pc_a_avail[aver](stokes, a_opts)
+                else:
+                    raise "invalid pc type for A block!"
+
                 self.Mpre = ngs.BlockMatrix( [ [self.Apre, None],
                                                [None, self.Spre.mat] ] )
+
+
+        def SetUpADirect(self, stokes, inv_type = None, **kwargs):
+            if inv_type is None:
+                ainvt = "sparsecholesky" if stokes.disc.compress else "umfpack"
+            else:
+                ainvt = inv_type
+            self.Apre = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = ainvt)
                 
+        def SetUpAAux(self, stokes, **kwargs):
+            pass
+
+        def SetUpAFacet(self, stokes, amg_opts = dict(), **kwargs):
+            if stokes.settings.sym:
+                if stokes.settings.mesh.dim == 2:
+                    self.Apre = ngs_amg.mcs_epseps_2d(self.a, **amg_opts)
+                else:
+                    self.Apre = ngs_amg.mcs_epseps_3d(self.a, **amg_opts)
+            else:
+                if stokes.settings.mesh.dim == 2:
+                    self.Apre = ngs_amg.mcs_gg_2d(self.a, **amg_opts)
+                else:
+                    self.Apre = ngs_amg.mcs_gg_3d(self.a, **amg_opts)
+            self.a.Assemble() # <- TODO: is this necessary ??
                 
         def SetUpDummy(self, stokes, **kwargs):
             self.Mpre = ngs.Projector(stokes.disc.Xext.FreeDofs(self.elint), True)

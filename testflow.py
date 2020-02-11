@@ -38,7 +38,7 @@ elif case == 3:
     geo = g2d.SplineGeometry()
     geo.AddRectangle((0, 0), (2,0.41), bcs=("wall", "outlet", "wall", "inlet"))
     geo.AddCircle((0.2, 0.2), r=0.05, leftdomain=0, rightdomain=1, bc="cyl")
-    mesh = Mesh(geo.GenerateMesh(maxh=0.05))
+    mesh = Mesh(geo.GenerateMesh(maxh=0.025))
     mesh.Curve(3)
     inlet = "inlet"
     outlet = "outlet"
@@ -50,7 +50,7 @@ elif case == 3:
     uin = CoefficientFunction( (4 * (2/0.41)**2 * y * (0.41 - y), 0))
     
 flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = inlet, outlet = outlet, wall_slip = wall_slip,
-                            wall_noslip = wall_noslip, uin = uin, symmetric = False, vol_force = vol_force)
+                            wall_noslip = wall_noslip, uin = uin, symmetric = True, vol_force = vol_force)
 
 disc_opts = { "order" : 2,
               "hodivfree" : False,
@@ -62,14 +62,32 @@ disc_opts = { "order" : 2,
 sol_opts = { "elint" : False,
              "block_la" : True,
              "pc_ver" : "block",
-             "pc_opts" : { } }
+             "pc_opts" : {
+                 "a_opts" : {
+                     "type" : "auxfacet",
+                     "inv_type" : "umfpack",
+                     "amg_opts" : {
+                         "ngs_amg_max_coarse_size" : 50,
+                         "ngs_amg_sm_type" : "bgs",
+                         "ngs_amg_keep_grid_maps" : True,
+                         "ngs_amg_ecw_geom" : True,
+                         "ngs_amg_ecw_robust" : False,
+                         "ngs_amg_enable_multistep" : False,
+                         "ngs_amg_log_level" : "extra",
+                         "ngs_amg_print_log" : True,
+                         "ngs_amg_do_test" : True,
+                         }
+                 }
+             }
+}
 
 
 with TaskManager():
     stokes = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts )
 
-    stokes.Solve(tol=1e-12, ms = 100)
+    stokes.Solve(tol=1e-12, ms = 300)
 
+    
 Draw(stokes.velocity, mesh, "velocity")
 Draw(stokes.pressure, mesh, "pressure")
 
