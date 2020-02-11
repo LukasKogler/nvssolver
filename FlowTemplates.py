@@ -121,20 +121,22 @@ class MCS:
             p,q = self.Q.TnT()
 
         self.a_vol = -1 / self.settings.nu * ngs.InnerProduct(sigma, tau) \
-                        + ngs.div(sigma) * v \
-                        + ngs.div(tau) * u
+                     + ngs.div(sigma) * v \
+                     + ngs.div(tau) * u
         if self.sym:
-            self.a_vol += ngs.InnerProduct(W, Skew2Vec(tau)) \
-                          + ngs.InnerProduct(R, Skew2Vec(sigma))
+           self.a_vol += ngs.InnerProduct(W, Skew2Vec(tau)) \
+                         + ngs.InnerProduct(R, Skew2Vec(sigma))
         self.a_bnd = - ((sigma * n) * n) * (v * n) \
-                        - ((tau * n) * n) * (u * n) \
-                        - (sigma * n) * tang(vhat) \
-                        - (tau * n) * tang(uhat)
+                       - ((tau * n) * n) * (u * n) \
+                       - (sigma * n) * tang(vhat) \
+                       - (tau * n) * tang(uhat)
         self.b_vol = ngs.div(u) * q
         self.bt_vol = ngs.div(v) * p
 
         if self.pq_reg != 0:
-            self.a_vol += -self.pq_reg * self.settings.nu * p*q
+            self.c_vol = -self.pq_reg * self.settings.nu * p*q
+        else:
+            self.c_vol = None
 
         if self.settings.vol_force is not None:
             self.f_vol = self.settings.vol_force * v
@@ -147,7 +149,8 @@ class MCS:
         self._stokesBT = None
         self._stokesBBT = None
         self._stokesf = None
-
+        self._stokesC = None
+        
 
     def stokesA(self):
         if self._stokesA == None:
@@ -169,14 +172,25 @@ class MCS:
             self._stokesB = self.Compile(self.bt_vol) * ngs.dx
         return self._stokesB
 
+    def stokesC(self):
+        if self._stokesC == None and self.c_vol is not None:
+            self._stokesC = self.Compile(self.c_vol) * ngs.dx
+        return self._stokesC
+
     def stokesBBT(self):
         if self._stokesB == None:
-            self._stokesB = self.Compile(self.b_vol + self.bt_vol) * ngs.dx
+            if self.c_vol == None:
+                self._stokesB = self.Compile(self.b_vol + self.bt_vol) * ngs.dx
+            else:
+                self._stokesB = self.Compile(self.b_vol + self.bt_vol + self.c_vol) * ngs.dx
         return self._stokesB
 
     def stokesM(self):
         if self._stokesM == None:
-            self._stokesM = self.Compile(self.a_vol + self.b_vol + self.bt_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
+            if self.c_vol == None:
+                self._stokesM = self.Compile(self.a_vol + self.b_vol + self.bt_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
+            else:
+                self._stokesM = self.Compile(self.a_vol + self.b_vol + self.bt_vol + self.c_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
         return self._stokesM
 
     def stokesf(self):
@@ -230,9 +244,10 @@ class StokesTemplate():
                 self.B = self.b.mat
                 # self.BT = self.B.T
                 self.BT = self.B.CreateTranspose()
+                self.C = None if self.c is None else self.c.mat
 
                 self.M = ngs.BlockMatrix( [ [self.A, self.BT],
-                                            [self.B, None] ] )
+                                            [self.B, self.C] ] )
 
                 self.rhs = ngs.BlockVector ( [self.f.vec,
                                               self.g.vec] )
@@ -241,28 +256,30 @@ class StokesTemplate():
                 self.rhs = self.f.vec
                                            
             
-            self.pc_avail = {"direct" : lambda astokes, opts : self.SetUpDirect(astokes, **opts),
-                             "aux" : lambda astokes, opts: self.SetUpAux(astokes, **opts),
-                             "facet_aux" : lambda astokes, opts: self.SetUpFacetAux(astokes, **opts),
-                             "none" : lambda astokes, opts : self.SetUpDummy(astokes, **opts) }
+            self.pc_avail = { "direct" : lambda astokes, opts : self.SetUpDirect(astokes, **opts),
+                              "block" : lambda astokes, opts : self.SetUpBlock(astokes, **opts),
+                              "none" : lambda astokes, opts : self.SetUpDummy(astokes) }
             if not pc_ver in self.pc_avail:
                 raise "invalid PC version!"
             else:
                 self.pc_avail[pc_ver](stokes, pc_opts)
 
-        def SetUpDummy(self, stokes, **kwargs):
-            self.Mpre = ngs.Projector(stokes.disc.Xext.FreeDofs(self.elint), True)
-                
         def SetUpFWOps(self, stokes):
             # Forward operators
             if self.block_la:
-                self.a = ngs.BilinearForm(stokes.disc.X, eliminate_internal = self.elint, eliminate_hidden = True)
+                self.a = ngs.BilinearForm(stokes.disc.X, eliminate_internal = self.elint, eliminate_hidden = stokes.disc.compress)
                 self.a += stokes.disc.stokesA()
 
                 self.b = ngs.BilinearForm(trialspace = stokes.disc.X, testspace = stokes.disc.Q)
                 self.b += stokes.disc.stokesB()
 
-                self._to_assemble += [ self.a, self.b ]
+                if stokes.disc.stokesC() is not None:
+                    self.c = ngs.BilinearForm(stokes.disc.Q)
+                    self.c += stokes.disc.stokesC()
+                else:
+                    self.c = None
+
+                self._to_assemble += [ self.a, self.b, self.c ]
 
             else:
                 self.m = ngs.BilinearForm(stokes.disc.Xext, eliminate_internal = self.elint, eliminate_hidden = stokes.disc.compress)
@@ -296,6 +313,30 @@ class StokesTemplate():
                 itype = "umfpack" if inv_type is None else inv_type
                 self.Mpre = self.M.Inverse(stokes.disc.Xext.FreeDofs(self.elint), inverse = itype)
             
+        def SetUpBlock(self, stokes, a_opts = { "a_pc_ver" : "direct" } , **kwargs):
+            if not self.block_la:
+                raise "block-PC with big compond space todo"
+            else:
+                p,q = stokes.disc.Q.TnT()
+                self.massp = ngs.BilinearForm(stokes.disc.Q)
+                self.massp +=  1/stokes.settings.nu * p * q * ngs.dx
+                self.Spre = ngs.Preconditioner(self.massp, "direct")
+
+                self.massp.Assemble()
+
+                ainvt = "sparsecholesky" if stokes.disc.compress else "umfpack"
+                if "inv_type" in a_opts:
+                    ainvt = a_opts["inv_type"]
+                self.Apre = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = ainvt)
+                
+                self.Mpre = ngs.BlockMatrix( [ [self.Apre, None],
+                                               [None, self.Spre.mat] ] )
+                
+                
+        def SetUpDummy(self, stokes, **kwargs):
+            self.Mpre = ngs.Projector(stokes.disc.Xext.FreeDofs(self.elint), True)
+                
+
         def SetUpAux(self, stokes):
             raise "TODO!"
             # Embedded H1 auxiliary space + Block-GS
@@ -303,13 +344,7 @@ class StokesTemplate():
 
             # Inverse mass matrix for Schur complement
             p,q = stokes.settings.Q.TnT()
-            self.massp = ngs.BilinearForm(stokes.settings.Q)
-            self.massp +=  1/(stokes.settins.nu) * p * q * ngs.dx
-            self.pc_S = ngs.Preconditioner(self.massp, "local")
-            self.Spre.mat = self.pc_S.mat
 
-            self.Mpre = ngs.BlockMatrix( [ [self.Apre, None,
-                                            None, self.Spre] ] )
 
 
         def SetUpFacetAux(self, stokes):
@@ -322,7 +357,7 @@ class StokesTemplate():
             # Inverse mass matrix for Schur complement
             p,q = stokes.settings.Q.TnT()
             self.massp = ngs.BilinearForm(stokes.settings.Q)
-            self.massp +=  1/(stokes.settins.nu) * p * q * ngs.dx
+            self.massp +=  1/stokes.settings.nu * p * q * ngs.dx
             self.pc_S = ngs.Preconditioner(self.massp, "local")
             self.Spre.mat = self.pc_S.mat
 
@@ -332,8 +367,9 @@ class StokesTemplate():
 
         def Assemble(self):
             for x in self._to_assemble:
-                print("ass ", x)
-                x.Assemble()
+                if x is not None:
+                    print("ass ", x)
+                    x.Assemble()
 
     def __init__(self, flow_settings = None, flow_opts = None, disc = None, disc_opts = None, sol_opts = None):
 

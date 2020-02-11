@@ -56,18 +56,19 @@ disc_opts = { "order" : 2,
               "hodivfree" : False,
               "truecompile" : False,
               "RT" : False,
-              "compress" : False }
+              "compress" : True,
+              "pq_reg" : 1e-6 }
 
-sol_opts = { "pc_ver" : "direct",
-             "elint" : False,
-             "block_la" : False,
+sol_opts = { "elint" : False,
+             "block_la" : True,
+             "pc_ver" : "block",
              "pc_opts" : { } }
 
 
 with TaskManager():
     stokes = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts )
 
-    stokes.Solve(tol=1e-12, ms = 1)
+    stokes.Solve(tol=1e-12, ms = 100)
 
 Draw(stokes.velocity, mesh, "velocity")
 Draw(stokes.pressure, mesh, "pressure")
