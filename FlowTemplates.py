@@ -8,7 +8,7 @@ class FlowOptions:
     """
     A collection of parameters for Stokes/Navier-Stokes computations. Collects Boundary-conditions
     """
-    def __init__(self, mesh, geom = None, nu = 1, inflow = "", outflow = "", wall_slip = "", wall_noslip = "",
+    def __init__(self, mesh, geom = None, nu = 1, inlet = "", outlet = "", wall_slip = "", wall_noslip = "",
                  uin = None, symmetric = True, vol_force = None):
         # geom/mesh
         self.geom = geom
@@ -19,9 +19,9 @@ class FlowOptions:
         self.vol_force = vol_force
 
         # BCs
-        self.inflow = inflow
+        self.inlet = inlet
         self.uin = uin
-        self.outflow = outflow
+        self.outlet = outlet
         self.wall_slip = wall_slip
         self.wall_noslip = wall_noslip
 
@@ -45,15 +45,15 @@ class MCS:
 
         # Spaces
         self.V = ngs.HDiv(settings.mesh, order = self.order, RT = self.RT, hodivfree = self.hodivfree, \
-                          dirichlet = settings.inflow + "|" + settings.wall_noslip + "|" + settings.wall_slip)
+                          dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.wall_slip)
         if self.RT:
             self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, \
-                                                   dirichlet = settings.inflow + "|" + settings.wall_noslip + "|" + settings.outflow)
+                                                   dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
             self.Sigma = ngs.HCurlDiv(settings.mesh, order = order, GGBubbles = True, discontinuous = True, ordertrace = self.order)
             # self.Sigma = ngs.HCurlDiv(mesh, order=order + 1, discontinuous=True, ordertrace=order) # slower I think
         else:
             self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
-                                                   dirichlet = settings.inflow + "|" + settings.wall_noslip + "|" + settings.outflow)
+                                                   dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
             self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True, ordertrace = self.order-1)
 
         if self.sym:
@@ -138,7 +138,7 @@ class MCS:
         print("Xext ranges :")
         for k,x in enumerate(self.Xext.components):
             print(self.Xext.Range(k).start, self.Xext.Range(k).stop)
-            
+
         aex_vol_cf = -1 / settings.nu * ngs.InnerProduct(sigma, tau) \
                      + ngs.div(sigma) * v \
                      + ngs.div(tau) * u
@@ -151,6 +151,8 @@ class MCS:
                      - (tau * n) * tang(uhat)
         bex_vol_cf = ngs.div(u) * q
         btex_vol_cf = ngs.div(v) * p
+
+        aex_vol_cf += -1e-6 * settings.nu * p*q
 
         if settings.vol_force is not None:
             self.stokesf = settings.vol_force * v * ngs.dx
@@ -266,7 +268,7 @@ class StokesTemplate():
             if self.block_la:
                 raise "Cannot invert block matrices!"
             else:
-                # print("MAT, ", self.m.mat)
+                print("MAT, ", self.m.mat)
                 itype = "umfpack" if inv_type is None else inv_type
                 self.Mpre = self.M.Inverse(stokes.disc.Xext.FreeDofs(self.elint), inverse = itype)
             
@@ -343,19 +345,26 @@ class StokesTemplate():
 
     def Solve(self, tol = 1e-8, ms = 1000):
 
-        if self.settings.uin is not None and len(self.settings.inflow)>0:
-            self.velocity.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inflow))
+        if self.settings.uin is not None and len(self.settings.inlet)>0:
+            self.velocity.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inlet))
             self.la.rhs.data -= self.la.M * self.la.sol_vec
         
         sv2 = self.la.sol_vec.CreateVector()
-
+        sv2[:] = 0
+        
         ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, pre = self.la.Mpre,
                           tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
 
         #ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, freedofs = self.disc.Xext.FreeDofs(),
         #                  tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps = ms)
 
+        # sv2.data = self.la.Mpre * self.la.rhs
+        
         self.la.sol_vec.data += sv2
+
+        # for k, comp in enumerate(self.la.gfu.components):
+        #     print("SOL comp", k)
+        #     print(self.la.gfu.components[k].vec)
 
 
 ### END Stokes Template ###
