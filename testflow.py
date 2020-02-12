@@ -4,8 +4,9 @@ import netgen.csg as csg
 
 from FlowTemplates import *
 
+ngsglobals.msg_level = 1
 
-case = 2
+case = 3
 
 if case == 1:
     geo = g2d.unit_square
@@ -38,7 +39,11 @@ elif case == 3:
     geo = g2d.SplineGeometry()
     geo.AddRectangle((0, 0), (2,0.41), bcs=("wall", "outlet", "wall", "inlet"))
     geo.AddCircle((0.2, 0.2), r=0.05, leftdomain=0, rightdomain=1, bc="cyl")
-    mesh = Mesh(geo.GenerateMesh(maxh=0.025))
+    ngm = geo.GenerateMesh(maxh=0.1)
+    for l in range(3): # TODO: facet aux with refined mesh!!
+        # raise "facet_aux with refined mesh does not work yet!! (check fine_facets ... )"
+        ngm.Refine()
+    mesh = Mesh(ngm)
     mesh.Curve(3)
     inlet = "inlet"
     outlet = "outlet"
@@ -52,19 +57,19 @@ elif case == 3:
 flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = inlet, outlet = outlet, wall_slip = wall_slip,
                             wall_noslip = wall_noslip, uin = uin, symmetric = True, vol_force = vol_force)
 
-disc_opts = { "order" : 2,
+disc_opts = { "order" : 3,
               "hodivfree" : False,
-              "truecompile" : False,
+              "truecompile" : mpi_world.size == 1,
               "RT" : False,
               "compress" : True,
-              "pq_reg" : 1e-6 }
+              "pq_reg" : 1e-6 if case == 2 else 0 }
 
 sol_opts = { "elint" : False,
-             "block_la" : True,
+             # "block_la" : False,
              "pc_ver" : "block",
              "pc_opts" : {
                  "a_opts" : {
-                     "type" : "auxfacet",
+                     "type" : "direct",
                      "inv_type" : "umfpack",
                      "amg_opts" : {
                          "ngs_amg_max_coarse_size" : 50,
@@ -81,11 +86,22 @@ sol_opts = { "elint" : False,
              }
 }
 
-
-with TaskManager():
+# SetNumThreads(1)
+with TaskManager(pajetrace = 50 * 2024 * 1024):
     stokes = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts )
 
-    stokes.Solve(tol=1e-12, ms = 300)
+    ts = Timer("solve")
+    ts.Start()
+    stokes.Solve(tol=1e-6, ms = 300)
+    ts.Stop()
+
+    if mpi_world.rank == 0:
+        print("\n---\ntime solve", ts.time)
+        print("A dofs/(sec * proc)", stokes.disc.X.ndof / (ts.time * mpi_world.size) ) 
+        print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndof + stokes.disc.Q.ndof) / (ts.time * mpi_world.size) ) 
+
+        # stokes.la.TestBlock()
+    
 
     
 Draw(stokes.velocity, mesh, "velocity")

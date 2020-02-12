@@ -2,6 +2,105 @@ import ngsolve as ngs
 import netgen as ng
 import ngs_amg
 
+### Misc Utilities ###
+
+## H1 -> MCS embedding ##
+
+def Lo2Ho ( X_ho, indsho, X_lo, indslo ):
+    dim = X_ho.mesh.dim
+
+    Vn_ho = X_ho.components[indsho[0]]
+    Vt_ho = X_ho.components[indsho[1]]
+    Vn_lo = X_lo.components[indslo[0]]
+    Vt_lo = X_lo.components[indslo[1]]
+
+    offn_ho = X_ho.Range(indsho[0]).start
+    offt_ho = X_ho.Range(indsho[1]).start
+    offn_lo = X_lo.Range(indslo[0]).start
+    offt_lo = X_lo.Range(indslo[1]).start
+
+    ind = X_lo.ndof * [0]
+
+    hdiv_os = (Vn_ho.globalorder + 1) * (Vn_ho.globalorder) // 2
+    tf_os = Vt_ho.globalorder
+
+    useless_dnum = -1
+    
+    for f in mesh.facets:
+        dn_ho = Vn_ho.GetDofNrs(f)
+        dt_ho = Vt_ho.GetDofNrs(f)
+        dn_lo = Vn_lo.GetDofNrs(f)
+        dt_lo = Vt_lo.GetDofNrs(f)
+        if len(dn_ho) > 0:
+            ct = Vn_ho.GetDofCouplingType(dn_ho[0])
+            if ct != ngs.COUPLING_TYPE.UNUSED_DOF:
+                if dim == 2:
+                    for dlo, dho in zip(dn_lo, dn_ho):
+                        ind[offn_lo + dlo] = offn_ho + dho
+                    for dlo, dho in zip(dt_lo, dt_ho):
+                        ind[offt_lo + dlo] = offt_ho + dho
+                else:
+                    # HDiv DOFs
+                    ind[offn_lo + dn_lo[0]] = offn_ho + dn_ho[0]
+                    ind[offn_lo + dn_lo[1]] = offn_ho + dn_ho[1]
+                    ind[offn_lo + dn_lo[2]] = offn_ho + dn_ho[1 + hdiv_offset]
+                    # TangentialFacet DOFs
+                    for dlo, dho in zip(dt_lo[:4], dt_ho[:4]):
+                        ind[offt_lo + dlo] = offt_ho + dho
+                    ind[offt_lo + dt_lo[4]] = offt_ho + dt_ho[2 * tf_os]
+                    ind[offt_lo + dt_lo[5]] = offt_ho + dt_ho[2 * tf_os + 1]
+            else: # hopefully no harm done here ...
+                if useless_dnum == -1:
+                    useless_dnum = dn_ho[0]
+                for dof in dn_lo:
+                    ind[offn_lo + dof] = useless_dnum
+                for dof in dt_lo:
+                    ind[offt_lo + dof] = useless_dnum
+                
+    lo_ho = ngs.PermutationMatrix(X.ndof, ind)
+    return lo_ho
+                
+                
+def H1Embedding (H1, X, inds = [0, 1]):
+    mesh = X.mesh
+
+    indv, indh = inds
+    
+    V_ho = X.components[indv]
+    Vh_ho = X.components[indvh]
+
+    V_lo = ngs.HDiv(mesh, order=1)
+    Vh_lo = ngs.TangentialFacetFESpace(mesh, order=1)
+    X_lo = ngs.FESpace([V, Vhat])
+    
+    ## VectorH1 -> [HDiv_lo, TangFacet_lo] ##
+    u,v = H1vec.TnT()
+    (un, ut), (vn, vt) = Xlo.TnT()     # normal
+    vnd = vn.Operator("dual")
+    
+    mmix = BilinearForm(trialspace = Xlo, testspace = H1vec)
+    mmix += u * vnd * ngs.dx(element_vb=BND)
+    mmix += u * ( vt - (vt*n)*n) * ngs.dx(element_vb=BND)
+    mmix.Assemble()
+
+    m = BilinearForm(Xlo)
+    m += un * vnd * ngs.dx(element_vb=BND)
+    m += ut * ( vt - (vt*n)*n) * ngs.dx(element_vb=BND)
+    m.Assemble()
+
+    minv = ngs_amg.BDI(m.mat.local_mat, face_blocks)
+    vec_Xlo = (minv @ m.mat.local_mat)
+
+    Xlo_X = Lo2Ho(X_ho = X, indsho = [indv, indvh], X_lo = Xlo, indslo = [0,1])
+    
+    vec_X = vec_Xlo @ Xlo_X
+    
+    return vec_X
+
+    
+### END Misc Utilities ###
+
+
 ### FlowOptions ###
 
 class FlowOptions:
@@ -49,13 +148,21 @@ class MCS:
         self.V = ngs.HDiv(settings.mesh, order = self.order, RT = self.RT, hodivfree = self.hodivfree, \
                           dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.wall_slip)
         if self.RT:
-            self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, \
-                                                   dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
+            if False: # "correct" version
+                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, \
+                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
+            else: # not "correct", but works with facet-aux
+                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, \
+                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|")
             self.Sigma = ngs.HCurlDiv(settings.mesh, order = order, GGBubbles = True, discontinuous = True, ordertrace = self.order)
             # self.Sigma = ngs.HCurlDiv(mesh, order=order + 1, discontinuous=True, ordertrace=order) # slower I think
         else:
-            self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
-                                                   dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
+            if False: # "correct" version
+                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
+                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
+            else: # works with facet-aux
+                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
+                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip)
             self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True, ordertrace = self.order-1)
 
         if self.sym:
@@ -206,10 +313,14 @@ class MCS:
 class StokesTemplate():
             
     class LinAlg():
-        def __init__(self, stokes, pc_ver = "aux", block_la = False, pc_opts = dict(),
+        def __init__(self, stokes, pc_ver = "aux", block_la = None, pc_opts = dict(),
                      elint = False):
 
-            self.block_la = block_la
+            if block_la is None:
+                self.block_la = pc_ver != "direct"
+            else:
+                self.block_la = block_la
+
             self.elint = elint
 
             self.pc_avail = { "direct" : lambda astokes, opts : self.SetUpDirect(astokes, **opts),
@@ -220,11 +331,8 @@ class StokesTemplate():
                                 "auxh1" : lambda astokes, opts : self.SetUpAAux(astokes, **opts),
                                 "auxfacet" : lambda astokes, opts : self.SetUpAFacet(astokes, **opts) }
 
-
             
-            print("block_la ", self.block_la)
-            
-            if (self.block_la == True) and (pc_ver == "direct"):
+            if self.block_la and pc_ver == "direct":
                 raise "For direct solve, use block_la = False!"
 
             stokes.disc.SetUpForms(compound = not self.block_la)
@@ -269,13 +377,12 @@ class StokesTemplate():
                 raise "invalid PC version!"
             else:
                 self.pc_avail[pc_ver](stokes, pc_opts)
-
-
+                
                 
         def SetUpFWOps(self, stokes):
             # Forward operators
             if self.block_la:
-                self.a = ngs.BilinearForm(stokes.disc.X, eliminate_internal = self.elint, eliminate_hidden = stokes.disc.compress)
+                self.a = ngs.BilinearForm(stokes.disc.X, condense = self.elint, eliminate_hidden = stokes.disc.compress)
                 self.a += stokes.disc.stokesA()
 
                 self.b = ngs.BilinearForm(trialspace = stokes.disc.X, testspace = stokes.disc.Q)
@@ -290,10 +397,11 @@ class StokesTemplate():
                 self._to_assemble += [ self.a, self.b, self.c ]
 
             else:
-                self.m = ngs.BilinearForm(stokes.disc.Xext, eliminate_internal = self.elint, eliminate_hidden = stokes.disc.compress)
+                self.m = ngs.BilinearForm(stokes.disc.Xext, condense = self.elint, eliminate_hidden = stokes.disc.compress)
                 self.m += stokes.disc.stokesM()
 
                 self._to_assemble += [ self.m ]
+                
                 
         def SetUpRHS(self, stokes):
             # Right hand side
@@ -313,7 +421,8 @@ class StokesTemplate():
 
                 self._to_assemble += [ self.f ]
                 
-        def SetUpDirect(self, stokes, inv_type = None):
+                
+        def SetUpDirect(self, stokes, inv_type = None, **kwargs):
             # Direct inverse
             if self.block_la:
                 raise "Cannot invert block matrices!"
@@ -328,13 +437,13 @@ class StokesTemplate():
                 p,q = stokes.disc.Q.TnT()
                 self.massp = ngs.BilinearForm(stokes.disc.Q)
                 self.massp +=  1/stokes.settings.nu * p * q * ngs.dx
-                self.Spre = ngs.Preconditioner(self.massp, "direct")
+                # self.Spre = ngs.Preconditioner(self.massp, "direct")
+                self.Spre = ngs.Preconditioner(self.massp, "local")
 
                 self.massp.Assemble()
 
                 aver = a_opts["type"] if "type" in a_opts else "direct"
                 if aver in self.pc_a_avail:
-                    print("aver", aver)
                     self.pc_a_avail[aver](stokes, a_opts)
                 else:
                     raise "invalid pc type for A block!"
@@ -350,9 +459,45 @@ class StokesTemplate():
                 ainvt = inv_type
             self.Apre = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = ainvt)
                 
-        def SetUpAAux(self, stokes, **kwargs):
-            pass
+                
+        def SetUpAAux(self, stokes, amg_opts = dict(), mpi_thrad = False, mpi_overlap = mpi_overlap, shm = None,
+                      bsblocks = None, **kwargs):
+            V = ngs.VectorH1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_slip + stokes.settings.inflow)
+            u,v = V.TnT()
+            a_aux = ngs.BilinearForm(V)
+            if stokes.settings.sym:
+                eps = lambda U : 0.5 * (grad(U) + grad(U).trans)
+                a_aux += stokes.settings.nu * eps(u) * eps(v) * ngs.dx
+                if stokes.settings.mesh.dim == 2:
+                    aux_pre = ngs_amg.elast_2d(a_aux, **amg_opts)
+                else:
+                    aux_pre = ngs_amg.elast_3d(a_aux, **amg_opts)
+            else:
+                a_aux += stokes.settings.nu * ngs.Grad(u) * ngs.Grad(v) * ngs.dx
+                if stokes.settings.mesh.dim == 2:
+                    aux_pre = ngs_amg.h1_2d(a_aux, **amg_opts)
+                else:
+                    aux_pre = ngs_amg.h1_3d(a_aux, **amg_opts)
+            a_aux.Assemble()
+            emb = H1Embedding(H1 = V, X = stokes.disc.X, inds = [0,1])
+            if mpi_world.size > 1:
+                emb = ngs.ParallelMatrix(emb, row_pardofs = V.ParalellDofs(),
+                                         col_pardofs = X.ParalellDofs(), ParallelMatrix.C2C)
 
+            bsblocks = ["CF"]       # cell + face
+            bsblocks = ["FE"]       # face + edge
+            bsblocks = ["F", "C"]   # face, cell
+            bsblocks = ["E", "F"]   # edge, face
+                
+            if bsblocks is None:
+                if self.elint or stokes.disc.V.globalorder < 3:
+                    bsblocks = [ ngs.NT_FACET ]
+            
+            bsmoother = ngs_amg.CreateBlockSmoother(self.a.mat, NT_FACET, shm = shm, mpi_thread = mpi_thread,
+                                                    mpi_overlap = mpi_overlap)
+            self.Apre = ngs_amg.EmbeddedAMGMatrix(amg_mat = aux_pre.amg_mat, smoother = bsmoother, embedding = emb)
+            
+            
         def SetUpAFacet(self, stokes, amg_opts = dict(), **kwargs):
             if stokes.settings.sym:
                 if stokes.settings.mesh.dim == 2:
@@ -365,43 +510,37 @@ class StokesTemplate():
                 else:
                     self.Apre = ngs_amg.mcs_gg_3d(self.a, **amg_opts)
             self.a.Assemble() # <- TODO: is this necessary ??
+            # print("AUX MAT: ", self.Apre.aux_mat)
+                
                 
         def SetUpDummy(self, stokes, **kwargs):
             self.Mpre = ngs.Projector(stokes.disc.Xext.FreeDofs(self.elint), True)
                 
-
-        def SetUpAux(self, stokes):
-            raise "TODO!"
-            # Embedded H1 auxiliary space + Block-GS
-
-
-            # Inverse mass matrix for Schur complement
-            p,q = stokes.settings.Q.TnT()
-
-
-
-        def SetUpFacetAux(self, stokes):
-            raise "TODO!"
-            # Facet wise auxiliary space AMG + Block-GS
-            amg_opts = { "ngs_amg_max_coarse_size" : 50,
-                         "ngs_amg_max_levels" : 10 }
-            self.pc_A = ngs_amg.mcs3d(self.A, **amg_opts)
-
-            # Inverse mass matrix for Schur complement
-            p,q = stokes.settings.Q.TnT()
-            self.massp = ngs.BilinearForm(stokes.settings.Q)
-            self.massp +=  1/stokes.settings.nu * p * q * ngs.dx
-            self.pc_S = ngs.Preconditioner(self.massp, "local")
-            self.Spre.mat = self.pc_S.mat
-
-            self.Mpre = ngs.BlockMatrix( [ [self.Apre, None,
-                                            None, self.Spre] ] )
                 
+        def TestBlock(self):
+            o_ms_l = ngs.ngsglobals.msg_level
+            ngs.ngsglobals.msg_level = 0
+
+            evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.Apre, tol=1e-10))
+            print("\n----")
+            print("min ev. preA\A:", evs_A[0])
+            print("max ev. preA\A:", evs_A[-1])
+            print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
+            print("----")
+            
+            S = self.B @ self.Apre @ self.B.T
+            evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-10))
+            print("min ev. preS\S:", evs_S[0])
+            print("max ev. preS\S:", evs_S[-1])
+            print("cond-nr preS\S:", evs_S[-1]/evs_S[0])
+            print("----\n")
+
+            ngs.ngsglobals.msg_level = o_ms_l
+
 
         def Assemble(self):
             for x in self._to_assemble:
                 if x is not None:
-                    print("ass ", x)
                     x.Assemble()
 
     def __init__(self, flow_settings = None, flow_opts = None, disc = None, disc_opts = None, sol_opts = None):
