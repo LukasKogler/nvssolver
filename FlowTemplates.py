@@ -4,100 +4,46 @@ import ngs_amg
 
 ### Misc Utilities ###
 
-## H1 -> MCS embedding ##
+class SPCST (ngs.BaseMatrix):
+    def __init__(self, smoother, pc, emb):
+        super(SPCST, self).__init__()
+        self.S = smoother
+        self.pc = pc
+        self.E = emb
+        self.ET = emb.T
+        self.emb_pc = self.E @ self.pc @ self.ET
+        self.xtemp = self.S.CreateColVector()
+        self.res = self.S.CreateColVector()
+        self.baux = self.E.CreateColVector()
+        self.xaux = self.E.CreateColVector()
+    def IsComplex(self):
+        return False
+    def Height(self):
+        return self.S.height
+    def Width(self):
+        return self.S.width
+    def CreateColVector(self):
+        return self.S.CreateColVector()
+    def CreateRowVector(self):
+        return self.S.CreateRowVector()
+    def MultAdd(self, scal, b, x):
+        self.Mult(b, self.xtemp)
+        x.data += scal * self.xtemp
+    def MultTransAdd(self, scal, b, x):
+        self.MultAdd(scal, b, x)
+    def MultTrans(self, b, x):
+        self.Mult(b, x)
+    def Mult(self, b, x):
+        x[:] = 0
+        self.res.data = b
+        # Forward smoothing - update residual
+        self.S.Smooth(x, b, self.res, x_zero = True, res_updated = True, update_res = True)
+        # x.data += self.emb_pc * self.res
+        self.emb_pc.MultAdd(1.0, self.res, x)
+        # Backward smoothing - no need to update residual
+        self.S.SmoothBack(x, b, self.res, False, False, False)
+        
 
-def Lo2Ho ( X_ho, indsho, X_lo, indslo ):
-    dim = X_ho.mesh.dim
-
-    Vn_ho = X_ho.components[indsho[0]]
-    Vt_ho = X_ho.components[indsho[1]]
-    Vn_lo = X_lo.components[indslo[0]]
-    Vt_lo = X_lo.components[indslo[1]]
-
-    offn_ho = X_ho.Range(indsho[0]).start
-    offt_ho = X_ho.Range(indsho[1]).start
-    offn_lo = X_lo.Range(indslo[0]).start
-    offt_lo = X_lo.Range(indslo[1]).start
-
-    ind = X_lo.ndof * [0]
-
-    hdiv_os = (Vn_ho.globalorder + 1) * (Vn_ho.globalorder) // 2
-    tf_os = Vt_ho.globalorder
-
-    useless_dnum = -1
-    
-    for f in mesh.facets:
-        dn_ho = Vn_ho.GetDofNrs(f)
-        dt_ho = Vt_ho.GetDofNrs(f)
-        dn_lo = Vn_lo.GetDofNrs(f)
-        dt_lo = Vt_lo.GetDofNrs(f)
-        if len(dn_ho) > 0:
-            ct = Vn_ho.GetDofCouplingType(dn_ho[0])
-            if ct != ngs.COUPLING_TYPE.UNUSED_DOF:
-                if dim == 2:
-                    for dlo, dho in zip(dn_lo, dn_ho):
-                        ind[offn_lo + dlo] = offn_ho + dho
-                    for dlo, dho in zip(dt_lo, dt_ho):
-                        ind[offt_lo + dlo] = offt_ho + dho
-                else:
-                    # HDiv DOFs
-                    ind[offn_lo + dn_lo[0]] = offn_ho + dn_ho[0]
-                    ind[offn_lo + dn_lo[1]] = offn_ho + dn_ho[1]
-                    ind[offn_lo + dn_lo[2]] = offn_ho + dn_ho[1 + hdiv_offset]
-                    # TangentialFacet DOFs
-                    for dlo, dho in zip(dt_lo[:4], dt_ho[:4]):
-                        ind[offt_lo + dlo] = offt_ho + dho
-                    ind[offt_lo + dt_lo[4]] = offt_ho + dt_ho[2 * tf_os]
-                    ind[offt_lo + dt_lo[5]] = offt_ho + dt_ho[2 * tf_os + 1]
-            else: # hopefully no harm done here ...
-                if useless_dnum == -1:
-                    useless_dnum = dn_ho[0]
-                for dof in dn_lo:
-                    ind[offn_lo + dof] = useless_dnum
-                for dof in dt_lo:
-                    ind[offt_lo + dof] = useless_dnum
-                
-    lo_ho = ngs.PermutationMatrix(X.ndof, ind)
-    return lo_ho
-                
-                
-def H1Embedding (H1, X, inds = [0, 1]):
-    mesh = X.mesh
-
-    indv, indh = inds
-    
-    V_ho = X.components[indv]
-    Vh_ho = X.components[indvh]
-
-    V_lo = ngs.HDiv(mesh, order=1)
-    Vh_lo = ngs.TangentialFacetFESpace(mesh, order=1)
-    X_lo = ngs.FESpace([V, Vhat])
-    
-    ## VectorH1 -> [HDiv_lo, TangFacet_lo] ##
-    u,v = H1vec.TnT()
-    (un, ut), (vn, vt) = Xlo.TnT()     # normal
-    vnd = vn.Operator("dual")
-    
-    mmix = BilinearForm(trialspace = Xlo, testspace = H1vec)
-    mmix += u * vnd * ngs.dx(element_vb=BND)
-    mmix += u * ( vt - (vt*n)*n) * ngs.dx(element_vb=BND)
-    mmix.Assemble()
-
-    m = BilinearForm(Xlo)
-    m += un * vnd * ngs.dx(element_vb=BND)
-    m += ut * ( vt - (vt*n)*n) * ngs.dx(element_vb=BND)
-    m.Assemble()
-
-    minv = ngs_amg.BDI(m.mat.local_mat, face_blocks)
-    vec_Xlo = (minv @ m.mat.local_mat)
-
-    Xlo_X = Lo2Ho(X_ho = X, indsho = [indv, indvh], X_lo = Xlo, indslo = [0,1])
-    
-    vec_X = vec_Xlo @ Xlo_X
-    
-    return vec_X
-
-    
 ### END Misc Utilities ###
 
 
@@ -158,12 +104,15 @@ class MCS:
             # self.Sigma = ngs.HCurlDiv(mesh, order=order + 1, discontinuous=True, ordertrace=order) # slower I think
         else:
             if False: # "correct" version
+                # self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
+                                                       # dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
                 self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
                                                        dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
             else: # works with facet-aux
                 self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
                                                        dirichlet = settings.inlet + "|" + settings.wall_noslip)
             self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True, ordertrace = self.order-1)
+            # self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True)
 
         if self.sym:
             if settings.mesh.dim == 2:
@@ -174,7 +123,7 @@ class MCS:
             self.S = None
 
         self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order-1)
-            
+
         if self.compress:
             self.Sigma.SetCouplingType(ngs.IntRange(0, self.Sigma.ndof), ngs.COUPLING_TYPE.HIDDEN_DOF)
             self.Sigma = ngs.Compress(self.Sigma)
@@ -329,7 +278,8 @@ class StokesTemplate():
 
             self.pc_a_avail = { "direct" : lambda astokes, opts : self.SetUpADirect(astokes, **opts),
                                 "auxh1" : lambda astokes, opts : self.SetUpAAux(astokes, **opts),
-                                "auxfacet" : lambda astokes, opts : self.SetUpAFacet(astokes, **opts) }
+                                "auxfacet" : lambda astokes, opts : self.SetUpAFacet(astokes, **opts),
+                                "stokesamg" : lambda astokes, opts : self.SetUpStokesAMG(astokes, **opts) }
 
             
             if self.block_la and pc_ver == "direct":
@@ -420,8 +370,7 @@ class StokesTemplate():
                     self.f += stokes.disc.stokesf()
 
                 self._to_assemble += [ self.f ]
-                
-                
+
         def SetUpDirect(self, stokes, inv_type = None, **kwargs):
             # Direct inverse
             if self.block_la:
@@ -436,9 +385,11 @@ class StokesTemplate():
             else:
                 p,q = stokes.disc.Q.TnT()
                 self.massp = ngs.BilinearForm(stokes.disc.Q)
+                if stokes.disc.stokesC() is not None:
+                    self.massp += -1 * stokes.disc.stokesC()
                 self.massp +=  1/stokes.settings.nu * p * q * ngs.dx
-                # self.Spre = ngs.Preconditioner(self.massp, "direct")
-                self.Spre = ngs.Preconditioner(self.massp, "local")
+                self.Spre = ngs.Preconditioner(self.massp, "direct")
+                # self.Spre = ngs.Preconditioner(self.massp, "local")
 
                 self.massp.Assemble()
 
@@ -460,43 +411,95 @@ class StokesTemplate():
             self.Apre = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = ainvt)
                 
                 
-        def SetUpAAux(self, stokes, amg_opts = dict(), mpi_thrad = False, mpi_overlap = mpi_overlap, shm = None,
-                      bsblocks = None, **kwargs):
-            V = ngs.VectorH1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_slip + stokes.settings.inflow)
-            u,v = V.TnT()
+        def SetUpAAux(self, stokes, amg_opts = dict(), mpi_thrad = False, mpi_overlap = False, shm = None,
+                      bsblocks = None, multiplicative = True, **kwargs):
+            # Auxiliary space problem/Preconditioner
+            # V = ngs.H1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + stokes.settings.inlet, dim = stokes.settings.mesh.dim)
+            #V = ngs.VectorH1(stokes.settings.mesh, order = 2, dirichlet = stokes.settings.wall_noslip + stokes.settings.inlet, nodalp2 = True)
+            # V = ngs.VectorH1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + stokes.settings.inlet)
+            V = ngs.VectorH1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + stokes.settings.inlet)
+            u, v = V.TnT()
             a_aux = ngs.BilinearForm(V)
             if stokes.settings.sym:
-                eps = lambda U : 0.5 * (grad(U) + grad(U).trans)
-                a_aux += stokes.settings.nu * eps(u) * eps(v) * ngs.dx
-                if stokes.settings.mesh.dim == 2:
-                    aux_pre = ngs_amg.elast_2d(a_aux, **amg_opts)
-                else:
-                    aux_pre = ngs_amg.elast_3d(a_aux, **amg_opts)
+                eps = lambda U : 0.5 * (ngs.grad(U) + ngs.grad(U).trans)
+                a_aux += stokes.settings.nu * ngs.InnerProduct(eps(u), eps(v)) * ngs.dx
+                amg_cl = ngs_amg.elast_2d if stokes.settings.mesh.dim == 2 else ngs_amg.elast_3d
             else:
-                a_aux += stokes.settings.nu * ngs.Grad(u) * ngs.Grad(v) * ngs.dx
-                if stokes.settings.mesh.dim == 2:
-                    aux_pre = ngs_amg.h1_2d(a_aux, **amg_opts)
-                else:
-                    aux_pre = ngs_amg.h1_3d(a_aux, **amg_opts)
-            a_aux.Assemble()
-            emb = H1Embedding(H1 = V, X = stokes.disc.X, inds = [0,1])
-            if mpi_world.size > 1:
-                emb = ngs.ParallelMatrix(emb, row_pardofs = V.ParalellDofs(),
-                                         col_pardofs = X.ParalellDofs(), ParallelMatrix.C2C)
+                a_aux += stokes.settings.nu * ngs.InnerProduct(ngs.Grad(u), ngs.Grad(v)) * ngs.dx
+                amg_cl = ngs_amg.h1_2d if stokes.settings.mesh.dim == 2 else ngs_amg.h1_3d
 
-            bsblocks = ["CF"]       # cell + face
-            bsblocks = ["FE"]       # face + edge
-            bsblocks = ["F", "C"]   # face, cell
-            bsblocks = ["E", "F"]   # edge, face
+            # amg_opts["ngs_amg_crs_alg"] = "ecol"
+            # amg_opts["ngs_amg_enable_multistep"] = True
+            #amg_opts["ngs_amg_lo"] = False
+            #amg_opts["ngs_amg_subset"] = "free"
+            # aux_pre = amg_cl(a_aux, **amg_opts)
+            aux_pre = ngs.Preconditioner(a_aux, "direct")
+
+            # aux_pre = ngs.Preconditioner(a_aux, "bddc", coarsetype = "ngs_amg.h1_2d")
+            # aux_pre = ngs.Preconditioner(a_aux, "bddc")
+
+            a_aux.Assemble()
+
+            # aux_pre.Test()
+            # quit()
+
+            # Embeddig Auxiliary space -> MCS space
+            emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = False, parmat = False)
+            tc1 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(0)) # to-compound
+            emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = False, parmat = False)
+            tc2 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(1)) # to-compound
+            embA = (tc1 @ emb1) + (tc2 @ emb2)
+            self.embA = embA
+            if ngs.mpi_world.size > 1:
+                embA = ngs.ParallelMatrix(embA, row_pardofs = V.ParallelDofs(), col_pardofs = stokes.disc.X.ParallelDofs(),
+                                          op = ParallelMatrix.C2C)
+
+            # Block-Smoother to combine with auxiliary PC    
+            X = stokes.disc.X
+            x_free = X.FreeDofs(self.elint)
+            facet_blocks = list()
+            if True:
+                for facet in stokes.settings.mesh.facets:
+                    block = list( dof for dof in X.GetDofNrs(facet) if dof >=0 and x_free[dof])
+                    if len(block):
+                        facet_blocks.append(block)
+                for elnr in range(stokes.settings.mesh.ne):
+                    block = list( dof for dof in X.GetDofNrs(ngs.NodeId(ngs.ELEMENT, elnr)) if dof >=0 and x_free[dof])
+                    # print("block len", len(block))
+                    if len(block):
+                        facet_blocks.append(block)
+            else:
+                for elem in stokes.settings.mesh.Elements():
+                    block = list( dof for dof in X.GetDofNrs(elem) if dof >=0 and x_free[dof])
+                    if len(block):
+                        facet_blocks.append(block)
+                    
                 
-            if bsblocks is None:
-                if self.elint or stokes.disc.V.globalorder < 3:
-                    bsblocks = [ ngs.NT_FACET ]
-            
-            bsmoother = ngs_amg.CreateBlockSmoother(self.a.mat, NT_FACET, shm = shm, mpi_thread = mpi_thread,
-                                                    mpi_overlap = mpi_overlap)
-            self.Apre = ngs_amg.EmbeddedAMGMatrix(amg_mat = aux_pre.amg_mat, smoother = bsmoother, embedding = emb)
-            
+            # The entire PC
+            if True:
+                # input("AAA")
+                bsmoother = ngs_amg.CreateHybridBlockGSS(mat = self.a.mat, blocks = facet_blocks, shm = ngs.mpi_world.size == 1)
+                # input("AAA")
+                # self.Apre = ngs_amg.S_PC_S(smoother = bsmoother, pre = aux_pre, emb = embA)
+                self.Apre = SPCST(smoother = bsmoother, pc = aux_pre, emb = embA)
+                # input("AAA")
+                # self.Apre = SPCST(smoother = bsmoother, pc = aux_pre, emb = embA)
+            else:
+                bsmoother = self.a.mat.local_mat.CreateBlockSmoother(facet_blocks)
+                # bsmoother = self.a.mat.local_mat.CreateSmoother(stokes.disc.X.FreeDofs(True))
+                # self.Apre = bsmoother + embA @ aux_pre @ embA.T
+                # self.Apre = bsmoother + embA @ aux_pre @ embA.T
+                self.Apre = bsmoother + embA @ aux_pre @ embA.T
+
+            self.Astuff = (bsmoother, embA, aux_pre, V)
+
+            # evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.Apre, tol=1e-10))
+            # print("\n----")
+            # print("min ev. preA\A:", evs_A[0])
+            # print("max ev. preA\A:", evs_A[-1])
+            # print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
+            # print("----")
+
             
         def SetUpAFacet(self, stokes, amg_opts = dict(), **kwargs):
             if stokes.settings.sym:
@@ -511,8 +514,13 @@ class StokesTemplate():
                     self.Apre = ngs_amg.mcs_gg_3d(self.a, **amg_opts)
             self.a.Assemble() # <- TODO: is this necessary ??
             # print("AUX MAT: ", self.Apre.aux_mat)
-                
-                
+            
+        def SetUpStokesAMG(self, stokes, amg_opts = dict(), **kwargs):
+            # self.Apre = ngs_amg.stokes_gg_2d(self.a, **amg_opts)
+            # self.Apre = ngs.Preconditioner(self.a, "ngs_amg.stokes_gg_2d", **amg_opts)
+            self.Apre = ngs_amg.stokes_gg_2d(self.a, **amg_opts)
+            self.a.Assemble()
+            
         def SetUpDummy(self, stokes, **kwargs):
             self.Mpre = ngs.Projector(stokes.disc.Xext.FreeDofs(self.elint), True)
                 
@@ -523,20 +531,23 @@ class StokesTemplate():
 
             evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.Apre, tol=1e-10))
             print("\n----")
-            print("min ev. preA\A:", evs_A[0])
-            print("max ev. preA\A:", evs_A[-1])
+            print("min ev. preA\A:", evs_A[:5])
+            print("max ev. preA\A:", evs_A[-5:])
             print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
             print("----")
             
             S = self.B @ self.Apre @ self.B.T
+            # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=ngs.IdentityMatrix(S.height), tol=1e-17))
             evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-10))
-            print("min ev. preS\S:", evs_S[0])
-            print("max ev. preS\S:", evs_S[-1])
-            print("cond-nr preS\S:", evs_S[-1]/evs_S[0])
+            print("min ev. preS\S:", evs_S[0:5])
+            print("max ev. preS\S:", evs_S[-5:])
+            evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
+            print("cond-nr preS\S:", evs_S[-1]/(evs0))
             print("----\n")
 
             ngs.ngsglobals.msg_level = o_ms_l
 
+            return evs_S[-1]/evs0, evs_A[-1]/evs_A[0]
 
         def Assemble(self):
             for x in self._to_assemble:
@@ -584,8 +595,11 @@ class StokesTemplate():
         sv2 = self.la.sol_vec.CreateVector()
         sv2[:] = 0
         
-        ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, pre = self.la.Mpre,
-                          tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
+        #ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, pre = self.la.Mpre,
+        #                  tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
+
+        ngs.solvers.MinRes(mat = self.la.M, rhs = self.la.rhs, sol = sv2, pre = self.la.Mpre,
+                           tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
 
         #ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, freedofs = self.disc.Xext.FreeDofs(),
         #                  tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps = ms)

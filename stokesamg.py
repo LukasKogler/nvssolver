@@ -44,9 +44,11 @@ elif case == 2:
     uin = CoefficientFunction((0, 0))
 elif case == 3:
     geo = g2d.SplineGeometry()
-    geo.AddRectangle((0, 0), (5,0.41), bcs=("wall", "outlet", "wall", "inlet"))
+    H = 0.41
+    L = 1
+    geo.AddRectangle((0, 0), (L*H,H), bcs=("wall", "outlet", "wall", "inlet"))
     # geo.AddCircle((0.2, 0.2), r=0.05, leftdomain=0, rightdomain=1, bc="cyl")
-    ngm = geo.GenerateMesh(maxh=0.1)
+    ngm = geo.GenerateMesh(maxh=H*0.2)
     for l in range(0): # TODO: facet aux with refined mesh!!
         # raise "facet_aux with refined mesh does not work yet!! (check fine_facets ... )"
         ngm.Refine()
@@ -108,18 +110,18 @@ sol_opts = { "elint" : False,
              "pc_opts" : {
                  "a_opts" : {
                      # "type" : "direct",
+                     "type" : "stokesamg",
                      # "type" : "auxfacet",
-                     "type" : "auxh1", 
-                     # "type" : "stokesamg", 
-                     "inv_type" : "sparsecholesky",
+                     # "type" : "auxh1", 
+                     "inv_type" : "umfpack",
                      "amg_opts" : {
                          "ngs_amg_max_coarse_size" : 50,
-                         # "ngs_amg_max_levels" : 2,
+                         "ngs_amg_max_levels" : 2,
                          "ngs_amg_sm_type" : "gs",
                          "ngs_amg_keep_grid_maps" : True,
                          "ngs_amg_n_levels_d2_agg" : 1,
                          "ngs_amg_ecw_geom" : True,
-                         "ngs_amg_enable_sp" : True,
+                         "ngs_amg_enable_sp" : False,
                          "ngs_amg_sp_max_per_row" : 4,
                          "ngs_amg_ecw_robust" : False,
                          "ngs_amg_enable_multistep" : False,
