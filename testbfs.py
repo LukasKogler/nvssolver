@@ -136,6 +136,14 @@ sol_opts = { "elint" : False,
 
 stokes = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts )
 
+X = stokes.disc.X
+for fac in mesh.facets:
+    print("X dofs facet", fac, " = ", list(X.GetDofNrs(fac)))
+print("\n")
+for k, el in enumerate(mesh.Elements()):
+    print("X dofs el nr ", k, " = ", list(x for x in X.GetDofNrs(el) if x>=0))
+print("\n")
+
 a = stokes.la.a
 Apre = stokes.la.Apre
 

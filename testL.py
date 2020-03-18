@@ -10,7 +10,8 @@ ngsglobals.msg_level = 1
 
 
 H = 1
-Ls = [H + k * 0.25 * H for k in range(20)]
+# Ls = [H + k * 0.5 * H for k in range(10)]
+Ls = [ 5, 10, 20 ]
 kappa_S = list()
 kappa_A = list()
 case = 2
@@ -74,6 +75,7 @@ for L in Ls:
                   "truecompile" : False, #mpi_world.size == 1,
                   "RT" : False,
                   "compress" : True,
+                  "divdivpen" : 0,
                   "pq_reg" : 1e-6 } # if case == 2 else 0 }
 
     sol_opts = { "elint" : False,
@@ -136,4 +138,4 @@ for L in Ls:
     # quit()
 
 import pickle
-pickle.dump((Ls, kappa_S, kappa_A), open("Lkappa3.pickle", "wb"))
+pickle.dump((Ls, kappa_S, kappa_A), open("Lkappa5.pickle", "wb"))

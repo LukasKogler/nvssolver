@@ -9,7 +9,7 @@ class Parameters():
         self.max_d = [pc.GetNDof(k,0) for k in range(self.max_l+1)]
         self.lev,self.dof,self.add = 0,0,0
         self.scal = 1.0 if comm.rank==0 else 0
-        self.os = 0
+        self.os = 1
         self.doquit = False
 
     def Update(self):
@@ -20,6 +20,9 @@ class Parameters():
 
     def ParseInput(self):
         ret = input('what to do next? (Q to quit)\n')
+
+        print("parse: ", ret)
+
         if ret in ['q','Q']:
             self.doquit = True
             return
@@ -69,20 +72,46 @@ def shape_test(stokes, aux_pc):
     comm = mesh.comm
     X = stokes.disc.X
     Q = stokes.disc.Q
+    Q0 = L2(mesh, order=0)
+
+    (un, ut, sigma), (vn, vt, tau) = X.TnT()
+    L = VectorL2(mesh, order=2)
+    ul, vl = L.TnT()
+    n = specialcf.normal(mesh.dim)
+    normal = lambda cf : (cf*n)*n
+    tang = lambda cf : cf - (cf*n)*n
+    m1 = BilinearForm(trialspace=X, testspace=L)
+    m1 += normal(un) * normal(vl) * dx(element_vb=BND)
+    m1 += tang(ut) * tang(vl) * dx(element_vb=BND)
+    m1.Assemble()
+    m2 = BilinearForm(L)
+    m2 += ul * vl * dx(element_vb=BND)
+    m2.Assemble()
+    m2i = m2.mat.Inverse()
+    E = m2i@m1.mat
+
+    print("X", X.ndof)
+    print("X0", X.components[0].ndof)
+    print("X1", X.components[1].ndof)
+    print("L", L.ndof)
+
 
     gfu = GridFunction(X)
-    gfu.components[0].Set(CoefficientFunction( (1, 0) ))
-
-    sc_vn = Draw(gfu.components[0], mesh, name = "U_n")
+    # sc_vn = Draw(gfu.components[0], mesh, name = "U_n")
     # sc_vt = Draw(gfu.components[1], mesh, name = "U_t")
     # sc_v  = Draw(CoefficientFunction(gfu.components[0] + gfu.components[1]), mesh, name = "U")
 
+    gfl = GridFunction(L)
+    sc_v = Draw(gfl, mesh, name = "U")
+    
     B = stokes.la.B
 
     gfp = GridFunction(Q)
     gfp.Set(x)
+    gfp0 = GridFunction(Q0)
 
     sc_p = Draw(gfp, mesh, name = "p")
+    # sc_p0 = Draw(gfp, mesh, name = "p0")
 
     console = Console(comm, aux_pc)
     params = console.params
@@ -92,6 +121,8 @@ def shape_test(stokes, aux_pc):
     while not params.doquit:
         console.Update()
 
+        print("next: ", params.lev, params.dof, params.scal)
+
         aux_pc.GetBF(bf_vec, params.lev, 0, params.dof)
 
         if params.add:
@@ -99,7 +130,11 @@ def shape_test(stokes, aux_pc):
         else:
             gfu.vec.data = params.scal * bf_vec
             
-        print("gfu vec", gfu.vec)
-            
+        gfl.vec.data = E * gfu.vec    
         gfp.vec.data = B * gfu.vec
+        gfp0.Set(gfp)
+
+        print("gfu vec", [ x for x in enumerate(gfu.vec) if x[1]!=0.0])
+        print("gfp0 vec", [ x for x in enumerate(gfp0.vec) if x[1]!=0.0])
+
         Redraw()

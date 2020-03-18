@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import pickle
 
-Ls, kappa_S, kappa_A = pickle.load(open("Lkappa3.pickle", "rb"))
+Ls, kappa_S, kappa_A = pickle.load(open("Lkappa5.pickle", "rb"))
 
 plt.subplot(1,2,1)
 plt.title("kappa S")
