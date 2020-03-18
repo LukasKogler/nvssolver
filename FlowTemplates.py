@@ -478,7 +478,7 @@ class StokesTemplate():
             if use_petsc:
                 if not _ngs_petsc:
                     raise Exception("NGs-PETSc interface not available!")
-            else:
+            elif not aux_direct:
                 if not _ngs_amg:
                     raise Exception("NGsAMG not available!")
 
