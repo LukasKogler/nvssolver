@@ -17,7 +17,7 @@ def gen_ref_mesh(geo, comm, maxh, nref = 0, mesh_file = "", load = False, save =
             if comm.size > 1:
                 ngmesh.Distribute(comm)
         else:
-            ngmesh = ngm.Receive(comm)
+            ngmesh = ngm.Mesh.Receive(comm)
         for l in range(nref):
             ngmesh.Refine()
         mesh = ngs.comp.Mesh(ngmesh)
@@ -108,14 +108,14 @@ def vortex2d(maxh, nref=0, save=False, load=False, nu=1):
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
     x, y, z = ngs.x, ngs.y, ngs.z
     zeta = x**2*(1-x)**2*y**2*(1-y)**2
-    u_ex = CoefficientFunction((zeta.Diff(y),-zeta.Diff(x)))
+    u_ex = ngs.CoefficientFunction((zeta.Diff(y),-zeta.Diff(x)))
     p_ex = x**5+y**5-1/3
     f_1 = -nu * (u_ex[0].Diff(x).Diff(x) + u_ex[0].Diff(y).Diff(y)) + p_ex.Diff(x)
     f_2 = -nu * (u_ex[1].Diff(x).Diff(x) + u_ex[1].Diff(y).Diff(y)) + p_ex.Diff(y)
     vol_force = ngs.CoefficientFunction((f_1,f_2))
     uin = ngs.CoefficientFunction( (0, 0) )
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "", outlet = "", wall_slip = "",
-                                wall_noslip = ".*", uin = uin, symmetric = symmetric, vol_force = vol_force)
+                                wall_noslip = ".*", uin = uin, symmetric = False, vol_force = vol_force)
     return flow_settings
 
 def MakeSettings(case, **kwargs):

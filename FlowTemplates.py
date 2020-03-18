@@ -1,3 +1,4 @@
+import sys
 import ngsolve as ngs
 import netgen as ng
 
@@ -12,6 +13,8 @@ try:
     import ngs_petsc as petsc
 except:
     _ngs_petsc = False
+
+# _ngs_petsc = False
     
 ### Misc Utilities ###
 
@@ -285,7 +288,11 @@ class StokesTemplate():
     class LinAlg():
         def __init__(self, stokes, pc_ver = "aux", pc_opts = dict(), elint = False):
 
+            self.comm = stokes.settings.mesh.comm
+
             self.elint = elint
+            ## with static condensation + hodivfree, we can iterate on the schur complement
+            self.it_on_sc = self.elint and stokes.disc.hodivfree
 
             self.block_la = pc_ver != "direct"
 
@@ -321,26 +328,39 @@ class StokesTemplate():
             self.Assemble()
 
             if self.block_la:
+                ## Even when using static condensation, we still need to iterate on the entire A matrix,
+                ## except when we are also using hodivfree
                 self.A = self.a.mat
+                if self.elint and not self.it_on_sc:
+                    Ahex, Ahext, Aii  = self.a.harmonic_extension, self.a.harmonic_extension_trans, self.a.inner_matrix
+                    Id = IdentityMatrix(self.A.height)
+                    self.A = (Id - Ahext) @ (self.A.local_mat + Aii) @ (Id - Ahex)
+                    if self.a.mesh.comm.size > 1:
+                        self.A = ngs.ParallelMatrix(self.A, row_pardofs = self.a.mat.row_pardofs, \
+                                                    col_pardofs = self.a.mat.col_pardofs, op = ngs.ParallelMatrix.C2D)
+
                 self.B = self.b.mat
                 # self.BT = self.B.T
-                self.BT = self.B.CreateTranspose()
+                self.BT = self.B.local_mat.CreateTranspose()
+                if self.comm.size > 1:
+                    self.BT = ngs.ParallelMatrix(self.BT, row_pardofs = self.B.col_pardofs, \
+                                                 col_pardofs = self.B.row_pardofs, op = ngs.ParallelMatrix.C2D)
                 self.C = None if self.c is None else self.c.mat
 
                 self.M = ngs.BlockMatrix( [ [self.A, self.BT],
                                             [self.B, self.C] ] )
 
-                self.rhs = ngs.BlockVector ( [self.f.vec,
-                                              self.g.vec] )
+                self.rhs_vec = ngs.BlockVector ( [self.f.vec,
+                                                  self.g.vec] )
             else:
                 self.M = self.m.mat
-                self.rhs = self.f.vec
+                self.rhs_vec = self.f.vec
                                            
             if not pc_ver in self.pc_avail:
-                raise "invalid PC version!"
+                raise Exception("invalid PC version!")
             else:
                 self.pc_avail[pc_ver](stokes, pc_opts)
-                
+
                 
         def SetUpFWOps(self, stokes):
             # Forward operators
@@ -389,17 +409,37 @@ class StokesTemplate():
 
                 self._to_assemble += [ self.f ]
 
+
+        def Assemble(self):
+            for x in self._to_assemble:
+                if x is not None:
+                    x.Assemble()
+
+        def PrepRHS(self, rhs_vec):
+            if self.it_on_sc:
+                rv = rhs_vec[0] if self.block_la else rhs_vec
+                rv.Distribute()
+                rv.local_vec += self.a.harmonic_extension_trans * rs.local_vec
+
+        def ExtendSol(self, sol_vec, rhs_vec):
+            if self.it_on_sc:
+                sv = sol_vec[0] if self.block_la else sol_vec 
+                rv = rhs_vec[0] if self.block_la else rhs_vec
+                sv.Cumulate()
+                sv.local_vec.data += self.a.inner_solve * rv.local_vec
+                sv.local_vec.data += self.a.harmonic_extension * sv.local_vec
+
         def SetUpDirect(self, stokes, inv_type = None, **kwargs):
             # Direct inverse
             if self.block_la:
-                raise "Cannot invert block matrices!"
+                raise Exception("Cannot invert block matrices!")
             else:
                 itype = "umfpack" if inv_type is None else inv_type
                 self.Mpre = self.M.Inverse(stokes.disc.Xext.FreeDofs(self.elint), inverse = itype)
             
         def SetUpBlock(self, stokes, a_opts = { "type" : "direct" } , **kwargs):
             if not self.block_la:
-                raise "block-PC with big compond space todo"
+                raise Exception("block-PC with big compond space todo")
             else:
                 p,q = stokes.disc.Q.TnT()
                 self.massp = ngs.BilinearForm(stokes.disc.Q)
@@ -417,7 +457,7 @@ class StokesTemplate():
                 if aver in self.pc_a_avail:
                     self.pc_a_avail[aver](stokes, a_opts)
                 else:
-                    raise "invalid pc type for A block!"
+                    raise Exception("invalid pc type for A block!")
 
                 self.Mpre = ngs.BlockMatrix( [ [self.Apre, None],
                                                [None, self.Spre] ] )
@@ -436,15 +476,19 @@ class StokesTemplate():
             use_petsc = amg_package == "petsc"
             if use_petsc:
                 if not _ngs_petsc:
-                    raise "NGs-PETSc interface not available!"
+                    raise Exception("NGs-PETSc interface not available!")
             else:
-                if not FlowTemplates._ngs_amg:
-                    raise "NGsAMG not available!"
+                if not _ngs_amg:
+                    raise Exception("NGsAMG not available!")
 
             # Auxiliary space
-            V = ngs.H1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + stokes.settings.inlet, \
-                       dim = stokes.settings.mesh.dim)
-            # V = ngs.VectorH1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + stokes.settings.inlet)
+            if True:
+                V = ngs.H1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet, \
+                           dim = stokes.settings.mesh.dim)
+            else:
+                V = ngs.VectorH1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet)
+
+            print("V free", sum(V.FreeDofs()), "of", V.ndof)
 
             # Auxiliary space Problem
             u, v = V.TnT()
@@ -469,36 +513,41 @@ class StokesTemplate():
             # aux_pre = ngs.Preconditioner(a_aux, "bddc")
 
             # aux_pre = ngs.Preconditioner(a_aux, "direct")
-            if not use_petsc:
-                aux_pre = amg_cl(a_aux, **amg_opts)
-                a_aux.Assemble()
+            if True:
+                if not use_petsc:
+                    aux_pre = amg_cl(a_aux, **amg_opts)
+                    a_aux.Assemble()
+                else:
+                    if stokes.settings.sym:
+                        raise Exception("symmetric gradient + PETSc-AMG TODO! (need to set RBMs)")
+                    a_aux.Assemble()
+                    mat_convert = petsc.PETScMatrix(a_aux.mat, freedofs=V.FreeDofs(), format=petsc.PETScMatrix.BAIJ)
+                    aux_pre = petsc.PETSc2NGsPrecond(mat=mat_convert, name="aux_amg", petsc_options = amg_opts)
             else:
-                if stokes.settings.sym:
-                    raise "symmetric gradient + PETSc-AMG TODO! (need to set RBMs)"
                 a_aux.Assemble()
-                mat_convert = petsc.PETScMatrix(a_aux.mat, freedofs=V.FreeDofs(), format=petsc.PETScMatrix.BAIJ)
-                aux_pre = petsc.PETSc2NGsPrecond(mat=mat_convert, name="aux_amg", petsc_options = amg_opts)
-
+                aux_pre = a_aux.mat.Inverse(V.FreeDofs(), inverse="mumps" if ngs.mpi_world.size>1 else "sparsecholesky")
+                
             # Embeddig Auxiliary space -> MCS space
-            emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = False, parmat = False)
+            emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = True, parmat = False)
             tc1 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(0)) # to-compound
-            emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = False, parmat = False)
+            emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = True, parmat = False)
             tc2 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(1)) # to-compound
             embA = (tc1 @ emb1) + (tc2 @ emb2)
-            self.embA = embA
+            print("embA 1 dims ", embA.height, embA.width)
             if ngs.mpi_world.size > 1:
-                self.embA = ngs.ParallelMatrix(self.embA, row_pardofs = V.ParallelDofs(), col_pardofs = stokes.disc.X.ParallelDofs(),
-                                               op = ngs.ParallelMatrix.C2C)
+                embA = ngs.ParallelMatrix(embA, row_pardofs = V.ParallelDofs(), col_pardofs = stokes.disc.X.ParallelDofs(),
+                                          op = ngs.ParallelMatrix.C2C)
+            print("embA 2 dims ", embA.height, embA.width)
                 
             # Block-Smoother to combine with auxiliary PC    
             if mlt_smoother and V.mesh.comm.size>1 and not _ngs_amg:
-                raise "MPI-parallel multiplicative block-smoothers only available with NgsMPI!"
+                raise Exception("MPI-parallel multiplicative block-smoothers only available with NgsMPI!")
             X = stokes.disc.X
             x_free = X.FreeDofs(self.elint)
             sm_blocks = list()
             if el_blocks:
                 if V.comm.size>1:
-                    raise "Element-Blocks are not possible with MPI!"
+                    raise Exception("Element-Blocks are not possible with MPI!")
                 for elem in stokes.settings.mesh.Elements():
                     block = list( dof for dof in X.GetDofNrs(elem) if dof>=0 and x_free[dof])
                     if len(block):
@@ -508,7 +557,7 @@ class StokesTemplate():
                     block = list( dof for dof in X.GetDofNrs(facet) if dof>=0 and x_free[dof])
                     if len(block):
                         sm_blocks.append(block)
-                if not self.elint: # if elint, no need to check these - len(block)==0!
+                if not self.elint: # if elint, no need to check these - len(block) will be 0!
                     for elnr in range(stokes.settings.mesh.ne):
                         block = list( dof for dof in X.GetDofNrs(ngs.NodeId(ngs.ELEMENT, elnr)) if dof>=0 and x_free[dof])
                         if len(block):
@@ -520,19 +569,30 @@ class StokesTemplate():
                     bsmoother = ngs_amg.CreateHybridBlockGSS(mat = self.a.mat, blocks = sm_blocks, shm = ngs.mpi_world.size == 1)
                     self.Apre = SPCST(smoother = bsmoother, mat = self.a.mat, pc = aux_pre, emb = embA, swr = True)
                 elif mpi_world.size == 1:
-                    bsmoother = self.a.mat.CreateBlockSmoother(sm_blocks)
+                    bsmoother = self.a.mat.local_mat.CreateBlockSmoother(sm_blocks)
                     self.Apre = SPCST(smoother = bsmoother, mat = self.a.mat, pc = aux_pre, emb = embA, swr = False)
                 else:
-                    raise "Parallel Multiplicative block-smoothers only available with NgsAMG!"
+                    raise Exception("Parallel Multiplicative block-smoothers only available with NgsAMG!")
             else:
-                bsmoother = self.a.mat.CreateBlockSmoother(blocks = sm_blocks, parallel=True)
+                bsmoother = self.a.mat.local_mat.CreateBlockSmoother(blocks = sm_blocks, parallel=True)
                 self.Apre = bsmoother + embA @ aux_pre @ embA.T
 
+            # v1 = self.Apre.CreateColVector()
+            # v2 = aux_pre.CreateColVector()
+            # print("vec lens", len(v1), len(v2))
+            # print("embA dims", embA.height, embA.width)
+            # v3 = aux_pre.CreateColVector()
+            # v4 = aux_pre.CreateRowVector()
+            # print("2vec lens", len(v3), len(v4))
+            # v3 = aux_pre.local_mat.CreateColVector()
+            # v4 = aux_pre.local_mat.CreateRowVector()
+            # print("2vec lens", len(v3), len(v4))
+            
             ## END SetUpAAux ##
             
         def SetUpAFacet(self, stokes, amg_opts = dict(), **kwargs):
             if not _ngs_amg:
-                raise "Facet Auxiliary space Preconditioner only available with NgsAMG!"
+                raise Exception("Facet Auxiliary space Preconditioner only available with NgsAMG!")
             if stokes.settings.sym:
                 if stokes.settings.mesh.dim == 2:
                     self.Apre = ngs_amg.mcs_epseps_2d(self.a, **amg_opts)
@@ -549,7 +609,7 @@ class StokesTemplate():
 
         def SetUpStokesAMG(self, stokes, amg_opts = dict(), **kwargs):
             if not _ngs_amg:
-                raise "Stokes AMG only available with NgsAMG!"
+                raise Exception("Stokes AMG only available with NgsAMG!")
             # self.Apre = ngs_amg.stokes_gg_2d(self.a, **amg_opts)
             # self.Apre = ngs.Preconditioner(self.a, "ngs_amg.stokes_gg_2d", **amg_opts)
             self.Apre = ngs_amg.stokes_gg_2d(self.a, **amg_opts)
@@ -585,34 +645,29 @@ class StokesTemplate():
                 print("cond-nr preS\S:", evs_S[-1]/(evs0))
                 print("----\n")
 
-            if self.a.space.mesh.comm.rank == 0:
-                print("Test SC CG")
-            cgr = S.CreateColVector()
-            cgs = S.CreateColVector()
-            ngs.solvers.CG(mat = S, rhs = cgr , sol = cgs, pre = self.Spre,
-                           tol = 1e-6, printrates = ngs.mpi_world.rank == 0, maxsteps=100 ) 
+            # if self.a.space.mesh.comm.rank == 0:
+            #     print("Test SC CG")
+            # cgr = S.CreateColVector()
+            # cgs = S.CreateColVector()
+            # ngs.solvers.CG(mat = S, rhs = cgr , sol = cgs, pre = self.Spre,
+            #                tol = 1e-6, printrates = ngs.mpi_world.rank == 0, maxsteps=100 ) 
 
-            ainv2 = self.a2.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = "umfpack")
-            S = self.B @ ainv2 @ self.B.T
-            evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spreb, tol=1e-10))
-            evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
+            # ainv2 = self.a2.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = "umfpack")
+            # S = self.B @ ainv2 @ self.B.T
+            # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spreb, tol=1e-10))
+            # evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
 
-            if self.a.space.mesh.comm.rank == 0:
-                print("(+DDP) min ev. preS\S:", evs_S[0:5])
-                print("(+DDP) max ev. preS\S:", evs_S[-5:])
-                print("(+DDP) cond-nr preS\S:", evs_S[-1]/(evs0))
-                print("----\n")
+            # if self.a.space.mesh.comm.rank == 0:
+            #     print("(+DDP) min ev. preS\S:", evs_S[0:5])
+            #     print("(+DDP) max ev. preS\S:", evs_S[-5:])
+            #     print("(+DDP) cond-nr preS\S:", evs_S[-1]/(evs0))
+            #     print("----\n")
 
 
 
             ngs.ngsglobals.msg_level = o_ms_l
 
             return evs_S[-1]/evs0, evs_A[-1]/evs_A[0]
-
-        def Assemble(self):
-            for x in self._to_assemble:
-                if x is not None:
-                    x.Assemble()
 
     def __init__(self, flow_settings = None, flow_opts = None, disc = None, disc_opts = None, sol_opts = None):
 
@@ -622,7 +677,7 @@ class StokesTemplate():
         elif flow_opts is not None:
             self.settings = FlowOptions(**flow_opts)
         else:
-            raise "need either flow_settings or flow_opts!"
+            raise Exception("need either flow_settings or flow_opts!")
 
         # spaces, forms
         if disc is not None:
@@ -630,7 +685,7 @@ class StokesTemplate():
         elif disc_opts is not None:
             self.disc = MCS(settings = self.settings, **disc_opts)
         else:
-            raise "need either disc or disc_opts!"
+            raise Exception("need either disc or disc_opts!")
 
         # linalg, preconditioner
         self.InitLinAlg(sol_opts)
@@ -648,26 +703,30 @@ class StokesTemplate():
 
     def Solve(self, tol = 1e-8, ms = 1000):
 
-        if self.settings.uin is not None and len(self.settings.inlet)>0:
+        homogenize = len(self.settings.inlet)>0 and self.settings.uin is not None
+
+        if homogenize:
             self.velocity.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inlet))
-            self.la.rhs.data -= self.la.M * self.la.sol_vec
-        
-        sv2 = self.la.sol_vec.CreateVector()
-        sv2[:] = 0
-        
+            rhs_vec = self.la.rhs_vec.CreateVector()
+            rhs_vec.data = self.la.rhs_vec
+            rhs_vec -= self.la.M * self.la.sol_vec
+            sol_vec = self.la.sol_vec.CreateVector()
+        else:
+            sol_vec = self.la.sol_vec
+            rhs_vec = self.la.rhs_vec
+
+        self.la.PrepRHS(rhs_vec = rhs_vec)
+
         # ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, pre = self.la.Mpre,
         #                   tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
 
-        ngs.solvers.MinRes(mat = self.la.M, rhs = self.la.rhs, sol = sv2, pre = self.la.Mpre,
-                           tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
+        ngs.solvers.MinRes(mat = self.la.M, rhs = rhs_vec, sol = sol_vec, pre = self.la.Mpre,
+                           tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms) 
 
-        #ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, freedofs = self.disc.Xext.FreeDofs(),
-        #                  tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps = ms)
+        self.la.ExtendSol(sol_vec = sol_vec, rhs_vec = rhs_vec)
 
-        # sv2.data = self.la.Mpre * self.la.rhs
-
-        
-        self.la.sol_vec.data += sv2
+        if homogenize:
+            self.la.sol_vec.data += sol_vec
 
         # for k, comp in enumerate(self.la.gfu.components):
         #     print("SOL comp", k)

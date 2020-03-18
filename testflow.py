@@ -16,7 +16,7 @@ ngsglobals.msg_level = 1
 flow_settings = channel2d(maxh=0.2, nu=1, L=1)
 pqr = 0
 
-# flow_settings = vortex2d(maxh=0.1, nu=1)
+# flow_settings = vortex2d(maxh=0.2, nu=1)
 # pqr = 1e-6
 
 disc_opts = { "order" : 3,
@@ -33,11 +33,15 @@ sol_opts = { "elint" : False,
              "pc_ver" : "block", # "block", "direct"
              "pc_opts" : {
                  "a_opts" : {
-                     "type" : "direct",
+                     # "type" : "direct",
                      # "type" : "auxfacet",
-                     # "type" : "auxh1", 
+                     "type" : "auxh1", 
+                     "amg_package" : "petsc", 
+                     # "amg_package" : "ngs_amg", 
+                     "mlt_smoother" : True, 
                      # "type" : "stokesamg", 
-                     "inv_type" : "sparsecholesky",
+                     # "inv_type" : "sparsecholesky",
+                     "inv_type" : "mumps",
                      "amg_opts" : {
                          "ngs_amg_max_coarse_size" : 50,
                          # "ngs_amg_max_levels" : 2,
