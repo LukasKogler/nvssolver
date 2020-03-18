@@ -38,6 +38,7 @@ sol_opts = { "elint" : False,
                      "type" : "auxh1", 
                      "amg_package" : "petsc", 
                      # "amg_package" : "ngs_amg", 
+                     # "amg_package" : "direct", # direct solve in auxiliary space
                      "mlt_smoother" : True, 
                      # "type" : "stokesamg", 
                      # "inv_type" : "sparsecholesky",
@@ -79,12 +80,12 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
 
     if mpi_world.rank == 0:
         print("\n---\ntime setup", tsup.time)
-        print("A dofs/(sec * proc)", stokes.disc.X.ndof / (tsup.time * mpi_world.size) / 1000, "K" ) 
-        print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndof + stokes.disc.Q.ndof) / (tsup.time * mpi_world.size) / 1000, "K" ) 
+        print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (tsup.time * mpi_world.size) / 1000, "K" ) 
+        print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (tsup.time * mpi_world.size) / 1000, "K" ) 
     if mpi_world.rank == 0:
         print("\n---\ntime solve", ts.time)
-        print("A dofs/(sec * proc)", stokes.disc.X.ndof / (ts.time * mpi_world.size) / 1000, "K" ) 
-        print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndof + stokes.disc.Q.ndof) / (ts.time * mpi_world.size) / 1000, "K" ) 
+        print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (ts.time * mpi_world.size) / 1000, "K" ) 
+        print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (ts.time * mpi_world.size) / 1000, "K" ) 
 
         # stokes.la.TestBlock()
 

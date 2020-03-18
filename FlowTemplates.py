@@ -474,6 +474,7 @@ class StokesTemplate():
         def SetUpAAux(self, stokes, amg_package = "petsc", amg_opts = dict(), mpi_thrad = False, mpi_overlap = False, shm = None,
                       bsblocks = None, multiplicative = True, el_blocks = False, mlt_smoother = True, **kwargs):
             use_petsc = amg_package == "petsc"
+            aux_direct = amg_package == "direct"
             if use_petsc:
                 if not _ngs_petsc:
                     raise Exception("NGs-PETSc interface not available!")
@@ -488,7 +489,7 @@ class StokesTemplate():
             else:
                 V = ngs.VectorH1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet)
 
-            print("V free", sum(V.FreeDofs()), "of", V.ndof)
+            # print("V free", sum(V.FreeDofs()), "of", V.ndof)
 
             # Auxiliary space Problem
             u, v = V.TnT()
@@ -513,7 +514,7 @@ class StokesTemplate():
             # aux_pre = ngs.Preconditioner(a_aux, "bddc")
 
             # aux_pre = ngs.Preconditioner(a_aux, "direct")
-            if True:
+            if aux_direct:
                 if not use_petsc:
                     aux_pre = amg_cl(a_aux, **amg_opts)
                     a_aux.Assemble()
@@ -533,11 +534,11 @@ class StokesTemplate():
             emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = True, parmat = False)
             tc2 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(1)) # to-compound
             embA = (tc1 @ emb1) + (tc2 @ emb2)
-            print("embA 1 dims ", embA.height, embA.width)
+            # print("embA 1 dims ", embA.height, embA.width)
             if ngs.mpi_world.size > 1:
                 embA = ngs.ParallelMatrix(embA, row_pardofs = V.ParallelDofs(), col_pardofs = stokes.disc.X.ParallelDofs(),
                                           op = ngs.ParallelMatrix.C2C)
-            print("embA 2 dims ", embA.height, embA.width)
+            # print("embA 2 dims ", embA.height, embA.width)
                 
             # Block-Smoother to combine with auxiliary PC    
             if mlt_smoother and V.mesh.comm.size>1 and not _ngs_amg:
