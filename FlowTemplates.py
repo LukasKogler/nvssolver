@@ -424,7 +424,7 @@ class StokesTemplate():
             if self.it_on_sc:
                 rv = rhs_vec[0] if self.block_la else rhs_vec
                 rv.Distribute()
-                rv.local_vec += self.a.harmonic_extension_trans * rs.local_vec
+                rv.local_vec.data += self.a.harmonic_extension_trans * rv.local_vec
 
         def ExtendSol(self, sol_vec, rhs_vec):
             if self.it_on_sc:
