@@ -59,7 +59,7 @@ def geo_3dchannel(H, L, W, obstacle=True):
 ## 2D Schaefer Turek benchmark
 ##
 def ST_2d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False):
-    H, L = 0.41, 2.5
+    H, L = 0.41, 2
     geo = geo_2dchannel(H=H, L=L, obstacle=True)
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
     uin = ngs.CoefficientFunction( (4 * (2/H)**2 * ngs.y * (H - ngs.y), 0))
@@ -73,7 +73,7 @@ register(ST_2d, "ST_2d")
 ## 2D Schaefer Turek benchmark
 ##
 def ST_3d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False):
-    H, W, L = 0.41, 0.41, 2.5
+    H, W, L = 0.41, 0.41, 2
     geo = geo_3dchannel(H=H, W=W, L=L, obstacle=True)
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
     uin = ngs.CoefficientFunction( (4 * (2/H)**2 * ngs.y * (H - ngs.y), 0, 0))

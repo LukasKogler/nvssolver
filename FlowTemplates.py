@@ -125,6 +125,7 @@ class MCS:
                                                        dirichlet = settings.inlet + "|" + settings.wall_noslip + "|")
             self.Sigma = ngs.HCurlDiv(settings.mesh, order = order, GGBubbles = True, discontinuous = True, ordertrace = self.order)
             # self.Sigma = ngs.HCurlDiv(mesh, order=order + 1, discontinuous=True, ordertrace=order) # slower I think
+            self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order)
         else:
             if False: # "correct" version
                 # self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
@@ -136,6 +137,7 @@ class MCS:
                                                        dirichlet = settings.inlet + "|" + settings.wall_noslip)
             self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True, ordertrace = self.order-1)
             # self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True)
+            self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order-1)
 
         if self.sym:
             if settings.mesh.dim == 2:
@@ -145,7 +147,6 @@ class MCS:
         else:
             self.S = None
 
-        self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order-1)
 
         if self.compress:
             self.Sigma.SetCouplingType(ngs.IntRange(0, self.Sigma.ndof), ngs.COUPLING_TYPE.HIDDEN_DOF)
@@ -333,9 +334,9 @@ class StokesTemplate():
                 self.A = self.a.mat
                 if self.elint and not self.it_on_sc:
                     Ahex, Ahext, Aii  = self.a.harmonic_extension, self.a.harmonic_extension_trans, self.a.inner_matrix
-                    Id = IdentityMatrix(self.A.height)
+                    Id = ngs.IdentityMatrix(self.A.height)
                     self.A = (Id - Ahext) @ (self.A.local_mat + Aii) @ (Id - Ahex)
-                    if self.a.mesh.comm.size > 1:
+                    if self.a.space.mesh.comm.size > 1:
                         self.A = ngs.ParallelMatrix(self.A, row_pardofs = self.a.mat.row_pardofs, \
                                                     col_pardofs = self.a.mat.col_pardofs, op = ngs.ParallelMatrix.C2D)
 
@@ -365,11 +366,13 @@ class StokesTemplate():
         def SetUpFWOps(self, stokes):
             # Forward operators
             if self.block_la:
-                self.a = ngs.BilinearForm(stokes.disc.X, condense = self.elint, eliminate_hidden = stokes.disc.compress)
+                self.a = ngs.BilinearForm(stokes.disc.X, condense = self.elint, eliminate_hidden = stokes.disc.compress, \
+                                          store_inner = self.elint and not self.it_on_sc)
                 self.a += stokes.disc.stokesA()
                 # self.a += 1e2 * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
 
-                self.a2 = ngs.BilinearForm(stokes.disc.X, condense = self.elint, eliminate_hidden = stokes.disc.compress)
+                self.a2 = ngs.BilinearForm(stokes.disc.X, condense = self.elint, eliminate_hidden = stokes.disc.compress, \
+                                          store_inner = self.elint and not self.it_on_sc)
                 self.a2 += stokes.disc.stokesA()
                 self.a2 += stokes.disc.ddp * 1e2 * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
 
@@ -385,6 +388,8 @@ class StokesTemplate():
                 self._to_assemble += [ self.a, self.a2, self.b, self.c ]
 
             else:
+                if self.elint:
+                    raise Exception("Static condensation for entire system does not work yet!")
                 self.m = ngs.BilinearForm(stokes.disc.Xext, condense = self.elint, eliminate_hidden = stokes.disc.compress)
                 self.m += stokes.disc.stokesM()
 
@@ -434,6 +439,8 @@ class StokesTemplate():
             if self.block_la:
                 raise Exception("Cannot invert block matrices!")
             else:
+                if self.elint:
+                    raise Exception("Direct inverse + static condenstation not possible yet!")
                 itype = "umfpack" if inv_type is None else inv_type
                 self.Mpre = self.M.Inverse(stokes.disc.Xext.FreeDofs(self.elint), inverse = itype)
             
@@ -459,9 +466,25 @@ class StokesTemplate():
                 else:
                     raise Exception("invalid pc type for A block!")
 
+                if self.elint and not self.it_on_sc:
+                    Ahex, Ahext, Aiii  = self.a.harmonic_extension, self.a.harmonic_extension_trans, self.a.inner_solve
+                    # print("Ahex ", Ahex)
+                    # print("Ahext", Ahext)
+                    # print("Aiii ", Aiii)
+                    Id = ngs.IdentityMatrix(self.A.height)
+                    if self.a.space.mesh.comm.size == 1:
+                        self.Apre = ((Id + Ahex) @ (self.Apre) @ (Id + Ahext)) + Aiii
+                    else:
+                        Ihex = ngs.ParallelMatrix(Id + Ahex, row_pardofs = self.a.mat.row_pardofs,
+                                                  col_pardofs = self.a.mat.row_pardofs, op = ngs.ParallelMatrix.C2C)
+                        Ihext = ngs.ParallelMatrix(Id + Ahext, row_pardofs = self.a.mat.row_pardofs,
+                                                   col_pardofs = self.a.mat.row_pardofs, op = ngs.ParallelMatrix.D2D)
+                        Isolve = ngs.ParallelMatrix(Aiii, row_pardofs = self.a.mat.row_pardofs,
+                                                    col_pardofs = self.a.mat.row_pardofs, op = ngs.ParallelMatrix.D2C)
+                        self.Apre = ( Ihex @ self.Apre @ Ihext ) + Isolve
+                
                 self.Mpre = ngs.BlockMatrix( [ [self.Apre, None],
                                                [None, self.Spre] ] )
-
 
         def SetUpADirect(self, stokes, inv_type = None, **kwargs):
             if inv_type is None:
@@ -472,6 +495,7 @@ class StokesTemplate():
             else:
                 ainvt = inv_type
             self.Apre = self.a2.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = ainvt)
+            # self.Apre = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = ainvt)
 
 
         def SetUpAAux(self, stokes, amg_package = "petsc", amg_opts = dict(), mpi_thrad = False, mpi_overlap = False, shm = None,
@@ -530,6 +554,17 @@ class StokesTemplate():
             else:
                 a_aux.Assemble()
                 aux_pre = a_aux.mat.Inverse(V.FreeDofs(), inverse="mumps" if ngs.mpi_world.size>1 else "sparsecholesky")
+
+            # print("aux free ", sum(V.FreeDofs()), len(V.FreeDofs()))
+            # evs_Aa = list(ngs.la.EigenValues_Preconditioner(mat=a_aux.mat, pre=aux_pre, tol=1e-10))
+            # # evs_Aa = list(ngs.la.EigenValues_Preconditioner(mat=a_aux.mat, pre=ngs.Projector(V.FreeDofs(), True), tol=1e-10))
+            # if self.a.space.mesh.comm.rank == 0:
+            #     print("\n----")
+            #     print("min ev. preAa\Aa:", evs_Aa[:5])
+            #     print("max ev. preAa\Aa:", evs_Aa[-5:])
+            #     print("cond-nr preAa\Aa:", evs_Aa[-1]/evs_Aa[0])
+            #     print("----")
+            
                 
             # Embeddig Auxiliary space -> MCS space
             emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = True, parmat = False, bonus_intorder_ab = 2)
@@ -627,8 +662,8 @@ class StokesTemplate():
             o_ms_l = ngs.ngsglobals.msg_level
             ngs.ngsglobals.msg_level = 0
 
-            evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.Apre, tol=1e-10))
-
+            evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=self.Apre, tol=1e-10))
+            
             if self.a.space.mesh.comm.rank == 0:
                 print("\n----")
                 print("min ev. preA\A:", evs_A[:5])
@@ -713,11 +748,12 @@ class StokesTemplate():
             self.velocity.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inlet))
             rhs_vec = self.la.rhs_vec.CreateVector()
             rhs_vec.data = self.la.rhs_vec
-            rhs_vec -= self.la.M * self.la.sol_vec
+            rhs_vec -= self.la.M * self.la.sol_vec 
             sol_vec = self.la.sol_vec.CreateVector()
         else:
             sol_vec = self.la.sol_vec
             rhs_vec = self.la.rhs_vec
+        
 
         self.la.PrepRHS(rhs_vec = rhs_vec)
 
