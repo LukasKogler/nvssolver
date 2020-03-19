@@ -36,7 +36,7 @@ def geo_2dchannel(H, L, obstacle=True):
         pos = 0.2/0.41*H
         if L < 1.3 * pos:
             raise "2dchannel: Increase L!"
-        geo.AddCircle((pos, pos), r=pos/4, leftdomain=0, rightdomain=1, bc="ostacle")
+        geo.AddCircle((pos, pos), r=pos/4, leftdomain=0, rightdomain=1, bc="obstacle")
     return geo
 
 def geo_3dchannel(H, L, W, obstacle=True):
