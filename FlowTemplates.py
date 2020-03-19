@@ -465,12 +465,15 @@ class StokesTemplate():
 
         def SetUpADirect(self, stokes, inv_type = None, **kwargs):
             if inv_type is None:
-                ainvt = "sparsecholesky" if stokes.disc.compress else "umfpack"
+                if ngs.mpi_world.size > 1:
+                    ainvt = "mumps"
+                else:
+                    ainvt = "sparsecholesky" if stokes.disc.compress else "umfpack"
             else:
                 ainvt = inv_type
             self.Apre = self.a2.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = ainvt)
-                
-                
+
+
         def SetUpAAux(self, stokes, amg_package = "petsc", amg_opts = dict(), mpi_thrad = False, mpi_overlap = False, shm = None,
                       bsblocks = None, multiplicative = True, el_blocks = False, mlt_smoother = True, **kwargs):
             use_petsc = amg_package == "petsc"
