@@ -514,7 +514,7 @@ class StokesTemplate():
             # aux_pre = ngs.Preconditioner(a_aux, "bddc")
 
             # aux_pre = ngs.Preconditioner(a_aux, "direct")
-            if aux_direct:
+            if not aux_direct:
                 if not use_petsc:
                     aux_pre = amg_cl(a_aux, **amg_opts)
                     a_aux.Assemble()
@@ -529,9 +529,9 @@ class StokesTemplate():
                 aux_pre = a_aux.mat.Inverse(V.FreeDofs(), inverse="mumps" if ngs.mpi_world.size>1 else "sparsecholesky")
                 
             # Embeddig Auxiliary space -> MCS space
-            emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = True, parmat = False)
+            emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = True, parmat = False, bonus_intorder_ab = 2)
             tc1 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(0)) # to-compound
-            emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = True, parmat = False)
+            emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = True, parmat = False, bonus_intorder_ab = 2)
             tc2 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(1)) # to-compound
             embA = (tc1 @ emb1) + (tc2 @ emb2)
             # print("embA 1 dims ", embA.height, embA.width)
@@ -547,7 +547,7 @@ class StokesTemplate():
             x_free = X.FreeDofs(self.elint)
             sm_blocks = list()
             if el_blocks:
-                if V.comm.size>1:
+                if V.mesh.comm.size>1:
                     raise Exception("Element-Blocks are not possible with MPI!")
                 for elem in stokes.settings.mesh.Elements():
                     block = list( dof for dof in X.GetDofNrs(elem) if dof>=0 and x_free[dof])

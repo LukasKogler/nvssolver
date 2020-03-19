@@ -21,7 +21,6 @@ def gen_ref_mesh(geo, comm, maxh, nref = 0, mesh_file = "", load = False, save =
         for l in range(nref):
             ngmesh.Refine()
         mesh = ngs.comp.Mesh(ngmesh)
-        ngs.Draw(mesh)
     return mesh
 
 __case_setups = dict()
@@ -32,7 +31,7 @@ def register(func, name):
 
 def geo_2dchannel(H, L, obstacle=True):
     geo = g2d.SplineGeometry()
-    geo.AddRectangle((0, 0), (2,H), bcs=("bottom", "right", "top", "left"))
+    geo.AddRectangle((0, 0), (L,H), bcs=("bottom", "right", "top", "left"))
     if obstacle == True:
         pos = 0.2/0.41*H
         if L < 1.3 * pos:
@@ -62,11 +61,10 @@ def geo_3dchannel(H, L, W, obstacle=True):
 def ST_2d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False):
     H, L = 0.41, 2.5
     geo = geo_2dchannel(H=H, L=L, obstacle=True)
-    ngs.Draw(geo)
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
     uin = ngs.CoefficientFunction( (4 * (2/H)**2 * ngs.y * (H - ngs.y), 0))
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "left", outlet = "right", wall_slip = "",
-                                wall_noslip = "bottom|top|obstacle", uin = uin, symmetric = False, vol_force = None)
+                                wall_noslip = "bottom|top|obstacle", uin = uin, symmetric = symmetric, vol_force = None)
     return flow_settings
 
 register(ST_2d, "ST_2d")
@@ -78,9 +76,9 @@ def ST_3d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False):
     H, W, L = 0.41, 0.41, 2.5
     geo = geo_3dchannel(H=H, W=W, L=L, obstacle=True)
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
-    uin = ngs.CoefficientFunction( (4 * (2/H)**2 * ngs.y * (H - ngs.y), 0))
+    uin = ngs.CoefficientFunction( (4 * (2/H)**2 * ngs.y * (H - ngs.y), 0, 0))
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "left", outlet = "right", wall_slip = "",
-                                wall_noslip = "wall|obstacle", uin = uin, symmetric = symmetric, vol_force = vol_force)
+                                wall_noslip = "wall|obstacle", uin = uin, symmetric = symmetric, vol_force = None)
     return flow_settings
 
 register(ST_3d, "ST_3d")
@@ -95,7 +93,7 @@ def channel2d(maxh, L=1, nref=0, save=False, load=False, nu=1, symmetric=False):
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
     uin = ngs.CoefficientFunction( (4 * ngs.y * (1-ngs.y), 0) )
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "left", outlet = "right", wall_slip = "",
-                                wall_noslip = "wall|obstacle", uin = uin, symmetric = symmetric, vol_force = None)
+                                wall_noslip = "top|bottom|obstacle", uin = uin, symmetric = symmetric, vol_force = None)
     return flow_settings
 
 ##
