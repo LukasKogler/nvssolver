@@ -37,7 +37,7 @@ def geo_2dchannel(H, L, obstacle=True):
         pos = 0.2/0.41*H
         if L < 1.3 * pos:
             raise "2dchannel: Increase L!"
-        geo.AddCircle((pos, pos), r=pos/4, leftdomain=0, rightdomain=1, bc="ostacle")
+        geo.AddCircle((pos, pos), r=pos/4, leftdomain=0, rightdomain=1, bc="obstacle")
     return geo
 
 def geo_3dchannel(H, L, W, obstacle=True):
@@ -78,9 +78,9 @@ def ST_3d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False):
     H, W, L = 0.41, 0.41, 2.5
     geo = geo_3dchannel(H=H, W=W, L=L, obstacle=True)
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
-    uin = ngs.CoefficientFunction( (4 * (2/H)**2 * ngs.y * (H - ngs.y), 0))
+    uin = ngs.CoefficientFunction( (4 * (2/H)**2 * ngs.y * (H - ngs.y), 0, 0))
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "left", outlet = "right", wall_slip = "",
-                                wall_noslip = "wall|obstacle", uin = uin, symmetric = symmetric, vol_force = vol_force)
+                                wall_noslip = "wall|obstacle", uin = uin, symmetric = symmetric, vol_force = None)
     return flow_settings
 
 register(ST_3d, "ST_3d")
