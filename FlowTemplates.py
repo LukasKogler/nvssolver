@@ -500,6 +500,8 @@ class StokesTemplate():
 
         def SetUpAAux(self, stokes, amg_package = "petsc", amg_opts = dict(), mpi_thrad = False, mpi_overlap = False, shm = None,
                       bsblocks = None, multiplicative = True, el_blocks = False, mlt_smoother = True, **kwargs):
+            if stokes.disc.hodivfree:
+                raise Exception("Sorry, Auxiliary space not available with hodivfree (dual shapes not implemented) !")
             use_petsc = amg_package == "petsc"
             aux_direct = amg_package == "direct"
             if use_petsc:
