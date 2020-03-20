@@ -24,7 +24,7 @@ pqr = 0
 pqr = 1e-6
 
 disc_opts = { "order" : 2,
-              "hodivfree" : False,
+              "hodivfree" : True,
               "truecompile" : False, #mpi_world.size == 1,
               "RT" : False,
               "compress" : True,
@@ -37,7 +37,7 @@ sol_opts = { "elint" : True,
              "pc_ver" : "block", # "block", "direct"
              "pc_opts" : {
                  "a_opts" : {
-                     # "type" : "direct",
+                     #"type" : "direct",
                      # "inv_type" : "mumps",
                      # "type" : "auxfacet",
                      "type" : "auxh1", 

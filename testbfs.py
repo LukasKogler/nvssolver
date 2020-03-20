@@ -3,86 +3,10 @@ import netgen.geom2d as g2d
 import netgen.csg as csg
 import sys
 
+from utils import *
 from FlowTemplates import *
 
 ngsglobals.msg_level = 1
-
-case = 3
-
-if case == 1:
-    geo = g2d.unit_square
-    ngm = geo.GenerateMesh(maxh=0.1)
-    for l in range(2):
-        ngm.Refine()
-    mesh = Mesh(ngm)
-    inlet = "left"
-    outlet = "right"
-    wall_slip = ""
-    wall_noslip = "top|bottom"
-    uin = CoefficientFunction((y * (1-y), 0))
-    nu = 1
-    vol_force = CoefficientFunction( (0,0) )
-elif case == 2:
-    geo = g2d.SplineGeometry()
-    geo.AddRectangle((0, 0), (1, 1), bcs=("wall", "wall", "wall", "wall"))
-    ngm = geo.GenerateMesh(maxh=0.1)
-    for l in range(2):
-        ngm.Refine()
-    mesh = Mesh(ngm)
-    nu = 1e-3
-    zeta = x**2*(1-x)**2*y**2*(1-y)**2
-    u_ex = CoefficientFunction((zeta.Diff(y),-zeta.Diff(x)))
-    Draw(u_ex, mesh, "u_ex")
-    p_ex = x**5+y**5-1/3
-    f_1 = -nu * (u_ex[0].Diff(x).Diff(x) + u_ex[0].Diff(y).Diff(y)) + p_ex.Diff(x)
-    f_2 = -nu * (u_ex[1].Diff(x).Diff(x) + u_ex[1].Diff(y).Diff(y)) + p_ex.Diff(y)
-    vol_force = CoefficientFunction((f_1,f_2))
-    wall_slip = ""
-    wall_noslip = ".*"
-    inlet = ""
-    outlet = ""
-    uin = CoefficientFunction((0, 0))
-elif case == 3:
-    geo = g2d.SplineGeometry()
-    H = 0.41
-    L = 1
-    geo.AddRectangle((0, 0), (L*H,H), bcs=("wall", "outlet", "wall", "inlet"))
-    # geo.AddCircle((0.2, 0.2), r=0.05, leftdomain=0, rightdomain=1, bc="cyl")
-    ngm = geo.GenerateMesh(maxh=H*0.2)
-    for l in range(0): # TODO: facet aux with refined mesh!!
-        # raise "facet_aux with refined mesh does not work yet!! (check fine_facets ... )"
-        ngm.Refine()
-    mesh = Mesh(ngm)
-    inlet = "inlet"
-    outlet = "outlet"
-    wall_noslip = "wall|cyl"
-    wall_slip = ""
-    # vol_force = CoefficientFunction( (0,0) )
-    vol_force = None
-    nu = 1e-3
-    uin = CoefficientFunction( (4 * (2/0.41)**2 * y * (0.41 - y), 0))
-elif case == 4:
-    geo = csg.CSGeometry()
-    channel = csg.OrthoBrick( csg.Pnt(-1, 0, 0), csg.Pnt(3, 0.41, 0.41) ).bc("wall")
-    inlet = csg.Plane (csg.Pnt(0,0,0), csg.Vec(-1,0,0)).bc("inlet")
-    outlet = csg.Plane (csg.Pnt(2.5, 0,0), csg.Vec(1,0,0)).bc("outlet")
-    cyl = csg.Cylinder(csg.Pnt(0.5, 0.2,0), csg.Pnt(0.5,0.2,0.41), 0.05).bc("cyl")
-    fluiddom = channel*inlet*outlet-cyl
-    geo.Add(fluiddom)
-    ngm = geo.GenerateMesh()
-    for l in range(0):
-        ngm.Refine()
-    mesh = Mesh(ngm)
-    inlet = "inlet"
-    outlet = "outlet"
-    wall_noslip = "wall|cyl"
-    wall_slip = ""
-    # vol_force = CoefficientFunction( (0,0) )
-    vol_force = None
-    nu = 1e-3
-    uin = CoefficientFunction( (16*y*(0.41-y)*z*(0.41-z)/(0.41*0.41*0.41*0.41), 0, 0) )
-
-
 
 ngsglobals.msg_level = 2
 print("ok, have mesh ...")
@@ -92,17 +16,18 @@ SetHeapSize(99999999)
 
 # mesh.Curve(3)
 
-flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = inlet, outlet = outlet, wall_slip = wall_slip,
-                            wall_noslip = wall_noslip, uin = uin, symmetric = False, vol_force = vol_force)
-
+flow_settings = vortex2d(maxh=0.4, nu=1)
+pqr = 1e-6
 order = 2
+
+mesh = flow_settings.mesh
 
 disc_opts = { "order" : order,
               "hodivfree" : False,
               "truecompile" : False, #mpi_world.size == 1,
               "RT" : False,
               "compress" : True,
-              "pq_reg" : 1e-6 if case == 2 else 0 }
+              "pq_reg" : pqr }
 
 sol_opts = { "elint" : False,
              # "block_la" : False,
@@ -123,6 +48,7 @@ sol_opts = { "elint" : False,
                          "ngs_amg_ecw_geom" : True,
                          "ngs_amg_enable_sp" : False,
                          "ngs_amg_sp_max_per_row" : 4,
+                         "ngs_amg_clev" : "none",
                          "ngs_amg_ecw_robust" : False,
                          "ngs_amg_enable_multistep" : False,
                          "ngs_amg_log_level" : "extra",
@@ -147,5 +73,34 @@ print("\n")
 a = stokes.la.a
 Apre = stokes.la.Apre
 
-from bftester_stokes import *
-shape_test(stokes = stokes, aux_pc = Apre)
+if False:
+    from bftester_stokes import *
+    shape_test(stokes = stokes, aux_pc = Apre)
+else:
+    v = GridFunction(X)
+    Apre.PoC(1, 0, v.vec)
+    print("v0 vec", [ x for x in enumerate(v.components[0].vec) if abs(x[1])>1e-8], "\n\n")
+    print("v1 vec", [ x for x in enumerate(v.components[1].vec) if abs(x[1])>1e-8], "\n\n")
+    Draw(v.components[0], mesh, "Pconst")
+
+    w = GridFunction(X)
+    w.components[0].Set(CoefficientFunction( (1, 0) ))
+    print("w0 vec", [ x for x in enumerate(w.components[0].vec) if abs(x[1])>1e-8], "\n\n")
+    # print("w1 vec", [ x for x in enumerate(w.components[1].vec) if x[1]!=0.0])
+    # Draw(w.components[0], mesh, "Pset")
+
+    diff = GridFunction(X)
+    diff.components[0].vec.data = w.components[0].vec - v.components[0].vec
+    print("diff vec", [ x for x in enumerate(diff.components[0].vec) if abs(x[1])>1e-8], "\n\n")
+    Draw(diff.components[0], mesh, "diff")
+
+
+    Q = stokes.disc.Q
+    B = stokes.la.B
+    gfp = GridFunction(Q)
+    gfp.vec.data = B * v.vec
+    Draw(gfp, mesh, "div")
+
+    # gfpd = GridFunction(Q)
+    # gfpd.vec.data = B * diff.vec
+    # Draw(gfpd, mesh, "divdiff")
