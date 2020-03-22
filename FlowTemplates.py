@@ -76,7 +76,7 @@ class FlowOptions:
     A collection of parameters for Stokes/Navier-Stokes computations. Collects Boundary-conditions
     """
     def __init__(self, mesh, geom = None, nu = 1, inlet = "", outlet = "", wall_slip = "", wall_noslip = "",
-                 uin = None, symmetric = True, vol_force = None):
+                 uin = None, symmetric = True, vol_force = None, l2_coef = None):
         # geom/mesh
         self.geom = geom
         self.mesh = mesh
@@ -84,6 +84,7 @@ class FlowOptions:
         # physical parameters
         self.nu = nu
         self.vol_force = vol_force
+        self.l2_coef = l2_coef
 
         # BCs
         self.inlet = inlet
@@ -210,7 +211,12 @@ class MCS:
                        - ((tau * n) * n) * (u * n) \
                        - (sigma * n) * tang(vhat) \
                        - (tau * n) * tang(uhat)
+        if self.settings.l2_coef is not None:
+            self.a_vol += self.settings.l2_coef * ngs.InnerProduct(u, v)
+            self.a_bnd += self.settings.l2_coef * ngs.InnerProduct(tang(uhat), tang(vhat))
         self.divdiv = ngs.div(u)*ngs.div(v)
+        self.uv = ngs.InnerProduct(u, v)
+        self.uhvh = ngs.InnerProduct(tang(uhat), tang(vhat))
         self.b_vol = ngs.div(u) * q
         self.bt_vol = ngs.div(v) * p
 
@@ -311,6 +317,7 @@ class StokesTemplate():
             if self.block_la:
                 self.gfu = ngs.GridFunction(stokes.disc.X)
                 self.velocity = self.gfu.components[0]
+                self.velhat = self.gfu.components[1]
                 self.p = ngs.GridFunction(stokes.disc.Q)
                 self.pressure = self.p
                 self.sol_vec = ngs.BlockVector([self.gfu.vec,
@@ -318,6 +325,7 @@ class StokesTemplate():
             else:
                 self.gfu = ngs.GridFunction(stokes.disc.Xext)
                 self.velocity = self.gfu.components[0].components[0]
+                self.velhat = self.gfu.components[0].components[1]
                 self.pressure = self.gfu.components[1]
                 self.sol_vec = self.gfu.vec
             
@@ -374,7 +382,9 @@ class StokesTemplate():
                 self.a2 = ngs.BilinearForm(stokes.disc.X, condense = self.elint, eliminate_hidden = stokes.disc.compress, \
                                           store_inner = self.elint and not self.it_on_sc)
                 self.a2 += stokes.disc.stokesA()
-                self.a2 += stokes.disc.ddp * 1e2 * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
+                self.a2 += stokes.disc.ddp * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
+                # self.a2 += 1e-4 * stokes.settings.nu * stokes.disc.uv * ngs.dx
+                # self.a2 += 1e-4 * stokes.settings.nu * stokes.disc.uhvh * ngs.dx(element_vb=ngs.BND)
 
                 self.b = ngs.BilinearForm(trialspace = stokes.disc.X, testspace = stokes.disc.Q)
                 self.b += stokes.disc.stokesB()
@@ -526,11 +536,15 @@ class StokesTemplate():
             if stokes.settings.sym:
                 eps = lambda U : 0.5 * (ngs.grad(U) + ngs.grad(U).trans)
                 a_aux += stokes.settings.nu * ngs.InnerProduct(eps(u), eps(v)) * ngs.dx
+                if stokes.settings.l2_coef is not None:
+                    a_aux += stokes.settings.l2_coef * ngs.InnerProduct(u, v) * ngs.dx
                 if not use_petsc:
                     amg_cl = ngs_amg.elast_2d if stokes.settings.mesh.dim == 2 else ngs_amg.elast_3d
             else:
                 a_aux += stokes.settings.nu * ngs.InnerProduct(ngs.Grad(u), ngs.Grad(v)) * ngs.dx
                 # a_aux += stokes.disc.ddp * stokes.settings.nu * ngs.div(u) * ngs.div(v) * ngs.dx
+                if stokes.settings.l2_coef is not None:
+                    a_aux += stokes.settings.l2_coef * ngs.InnerProduct(u, v) * ngs.dx
                 if not use_petsc:
                     amg_cl = ngs_amg.h1_2d if stokes.settings.mesh.dim == 2 else ngs_amg.h1_3d
 
@@ -653,8 +667,10 @@ class StokesTemplate():
                 raise Exception("Stokes AMG only available with NgsAMG!")
             # self.Apre = ngs_amg.stokes_gg_2d(self.a, **amg_opts)
             # self.Apre = ngs.Preconditioner(self.a, "ngs_amg.stokes_gg_2d", **amg_opts)
-            self.Apre = ngs_amg.stokes_gg_2d(self.a, **amg_opts)
-            self.a.Assemble()
+            blf = self.a2
+            # self.Apre = ngs.Preconditioner(blf, "direct")
+            self.Apre = ngs_amg.stokes_gg_2d(blf, **amg_opts)
+            blf.Assemble()
 
         def SetUpDummy(self, stokes, **kwargs):
             self.Mpre = ngs.Projector(stokes.disc.Xext.FreeDofs(self.elint), True)
@@ -673,6 +689,15 @@ class StokesTemplate():
                 print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
                 print("----")
             
+            # if not self.elint:
+            #     evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.a2.mat, pre=self.Apre, tol=1e-10))
+            #     if self.a.space.mesh.comm.rank == 0:
+            #         print("\n----")
+            #         print("min ev. preA\A2:", evs_A[:5])
+            #         print("max ev. preA\A2:", evs_A[-5:])
+            #         print("cond-nr preA\A2:", evs_A[-1]/evs_A[0])
+            #         print("----")
+
             ainv = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = "umfpack")
             S = self.B @ ainv @ self.B.T
             # S = self.B @ self.Apre @ self.B.T
@@ -732,6 +757,7 @@ class StokesTemplate():
         self.InitLinAlg(sol_opts)
 
         self.velocity = self.la.velocity
+        self.velhat = self.la.velhat
         self.pressure = self.la.pressure
             
     def InitLinAlg(self, sol_opts = None):
@@ -748,6 +774,7 @@ class StokesTemplate():
 
         if homogenize:
             self.velocity.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inlet))
+            self.velhat.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inlet))
             rhs_vec = self.la.rhs_vec.CreateVector()
             rhs_vec.data = self.la.rhs_vec
             rhs_vec -= self.la.M * self.la.sol_vec 
