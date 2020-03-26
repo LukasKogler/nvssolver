@@ -686,7 +686,7 @@ class StokesTemplate():
             self.Mpre = ngs.Projector(stokes.disc.Xext.FreeDofs(self.elint), True)
                 
                 
-        def TestBlock(self):
+        def TestBlock(self, exai = False):
             o_ms_l = ngs.ngsglobals.msg_level
             ngs.ngsglobals.msg_level = 0
 
@@ -699,19 +699,14 @@ class StokesTemplate():
                 print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
                 print("----")
             
-            # if not self.elint:
-            #     evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.a2.mat, pre=self.Apre, tol=1e-10))
-            #     if self.a.space.mesh.comm.rank == 0:
-            #         print("\n----")
-            #         print("min ev. preA\A2:", evs_A[:5])
-            #         print("max ev. preA\A2:", evs_A[-5:])
-            #         print("cond-nr preA\A2:", evs_A[-1]/evs_A[0])
-            #         print("----")
+            if exai:
+                if self.elint:
+                    raise Exception("ex a inv for S test todo")
+                ainv = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = "umfpack")
+                S = self.B @ ainv @ self.B.T
+            else:
+                S = self.B @ self.Apre @ self.B.T
 
-            # ainv = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = "umfpack")
-            # S = self.B @ ainv @ self.B.T
-            S = self.B @ self.Apre @ self.B.T
-            # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=ngs.IdentityMatrix(S.height), tol=1e-17))
             evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spreb, tol=1e-14))
             evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
 
@@ -721,30 +716,11 @@ class StokesTemplate():
                 print("cond-nr preS\S:", evs_S[-1]/(evs0))
                 print("----\n")
 
-            # # if self.a.space.mesh.comm.rank == 0:
-            # #     print("Test SC CG")
-            # cgr = S.CreateColVector()
-            # cgs = S.CreateColVector()
-            # ngs.solvers.CG(mat = S, rhs = cgr , sol = cgs, pre = self.Spre,
-            #                tol = 1e-6, printrates = ngs.mpi_world.rank == 0, maxsteps=100 ) 
-
-            # ainv2 = self.a2.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = "umfpack")
-            # S = self.B @ ainv2 @ self.B.T
-            # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spreb, tol=1e-10))
-            # evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
-
-            # if self.a.space.mesh.comm.rank == 0:
-            #     print("(+DDP) min ev. preS\S:", evs_S[0:5])
-            #     print("(+DDP) max ev. preS\S:", evs_S[-5:])
-            #     print("(+DDP) cond-nr preS\S:", evs_S[-1]/(evs0))
-            #     print("----\n")
-
-
-
             ngs.ngsglobals.msg_level = o_ms_l
 
-            return evs_S[-1]/evs0, evs_A[-1]/evs_A[0]
+            return evs_A[-1]/evs_A[0], evs_S[-1]/evs0, evs_A, evs_S
 
+        
     def __init__(self, flow_settings = None, flow_opts = None, disc = None, disc_opts = None, sol_opts = None):
 
         # mesh, geometry, physical parameters 
