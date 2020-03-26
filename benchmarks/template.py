@@ -78,12 +78,12 @@ def getnd(V):
     return (V.ndofglobal, mpi_world.Max(V.ndof), mpi_world.Min(V.ndof))
 import pickle
 RD = dict()
-RD["ND"] = { "X" : getnd(X), "Xc" : [ getnd(stokes.disc.X.components[0]), getnd(stokes.disc.X.components[1]) ], "Q" : getnd(stokes.disc.Q) }
+RD["ND"] = { "X" : getnd(stokes.disc.X), "Xc" : [ getnd(stokes.disc.X.components[0]), getnd(stokes.disc.X.components[1]) ], "Q" : getnd(stokes.disc.Q) }
 RD["tsetup"] = tsup.time
 RD["tsolve"] = ts.time
 RD["ctimers"] = Timers()
 RD["disc_opts"] = disc_opts
-RD["sol_opts"] = so_opts
+RD["sol_opts"] = sol_opts
 RD["kappaA"] = kappaA
 RD["kappaS"] = kappaS
 RD["evsA"] = evsA
