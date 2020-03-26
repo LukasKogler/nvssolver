@@ -475,7 +475,6 @@ class StokesTemplate():
                 # self.Spre = ngs.Preconditioner(self.massp, "direct")
                 self.Spre = ngs.Preconditioner(self.massp, "local")
                 self.Spreb = self.Spre # bare
-                # self.Spre = 1e1 * self.Spre
 
                 self.massp.Assemble()
 
@@ -484,6 +483,8 @@ class StokesTemplate():
                     self.pc_a_avail[aver](stokes, a_opts)
                 else:
                     raise Exception("invalid pc type for A block!")
+
+                self.ASpre = self.Apre
 
                 if self.elint and not self.it_on_sc:
                     Ahex, Ahext, Aiii  = self.a.harmonic_extension, self.a.harmonic_extension_trans, self.a.inner_solve
@@ -793,10 +794,6 @@ class StokesTemplate():
             rhs_vec = self.la.rhs_vec
         
 
-        self.la.PrepRHS(rhs_vec = rhs_vec)
-
-        # ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, pre = self.la.Mpre,
-        #                   tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
 
         if bp:
             if not self.la.block_la:
@@ -804,20 +801,23 @@ class StokesTemplate():
             # scnd = (self.la.elint and not self.la.it_on_sc)
             it, t_prep, t_it = BramblePasciakCG(blfA = self.la.a, blfB = self.la.b, matC = None, \
                                                 f = rhs_vec[0], g = rhs_vec[1], sol = sol_vec, \
-                                                preA_unscaled = self.la.Apre,
+                                                # preA_unscaled = self.la.Apre, # PC for A
+                                                preA_unscaled = self.la.ASpre,  # PC for A SC
                                                 # k = 1/0.03,
                                                 # k = 1/0.05,
                                                 preM = self.la.Spre, \
-                                                staticcond = True,
+                                                staticcond = False,
                                                 initialize = True, tol = 1e-6, maxsteps = 1000, rel_err = True)
         else:
+            self.la.PrepRHS(rhs_vec = rhs_vec)
+            # ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, pre = self.la.Mpre,
+            #                   tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
             ngs.solvers.MinRes(mat = self.la.M, rhs = rhs_vec, sol = sol_vec, pre = self.la.Mpre,
                                tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms) 
 
-        self.la.ExtendSol(sol_vec = sol_vec, rhs_vec = rhs_vec)
-
-        if homogenize:
-            self.la.sol_vec.data += sol_vec
+            self.la.ExtendSol(sol_vec = sol_vec, rhs_vec = rhs_vec)
+            if homogenize:
+                self.la.sol_vec.data += sol_vec
 
         # for k, comp in enumerate(self.la.gfu.components):
         #     print("SOL comp", k)
