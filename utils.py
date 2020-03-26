@@ -33,10 +33,9 @@ def geo_2dchannel(H, L, obstacle=True):
     geo = g2d.SplineGeometry()
     geo.AddRectangle((0, 0), (L,H), bcs=("bottom", "right", "top", "left"))
     if obstacle == True:
-        pos = 0.2/0.41*H
-        if L < 1.3 * pos:
-            raise "2dchannel: Increase L!"
-        geo.AddCircle((pos, pos), r=pos/4, leftdomain=0, rightdomain=1, bc="obstacle")
+        pos = 0.2
+        r = 0.05
+        geo.AddCircle((pos, pos), r=r, leftdomain=0, rightdomain=1, bc="obstacle")
     return geo
 
 def geo_3dchannel(H, L, W, obstacle=True):
@@ -45,11 +44,9 @@ def geo_3dchannel(H, L, W, obstacle=True):
     inlet = csg.Plane (csg.Pnt(0,0,0), csg.Vec(-1,0,0)).bc("left")
     outlet = csg.Plane (csg.Pnt(L, 0,0), csg.Vec(1,0,0)).bc("right")
     if obstacle == True:
-        pos = (L/5, 0.21 * (H/0.41))
-        r = 0.05 * (H/0.41)
-        if pos[1]+r > L:
-            raise "2dchannel: Increase L!"
-        cyl = csg.Cylinder(csg.Pnt(*pos, 0), csg.Pnt(*pos, 1), r).bc("obstacle")
+        pos = (0.5, 0.2)
+        r = 0.05
+        cyl = csg.Cylinder(csg.Pnt(pos[0], 0, pos[1]), csg.Pnt(pos[0], 1, pos[1]), r).bc("obstacle")
     fluiddom = channel*inlet*outlet-cyl
     geo.Add(fluiddom)
     return geo
@@ -59,10 +56,10 @@ def geo_3dchannel(H, L, W, obstacle=True):
 ## 2D Schaefer Turek benchmark
 ##
 def ST_2d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False):
-    H, L = 0.41, 2
+    H, L = 0.41, 2.2
     geo = geo_2dchannel(H=H, L=L, obstacle=True)
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
-    uin = ngs.CoefficientFunction( (4 * (2/H)**2 * ngs.y * (H - ngs.y), 0))
+    uin = ngs.CoefficientFunction( (1.5 * (2/H)**2 * ngs.y * (H - ngs.y), 0))
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "left", outlet = "right", wall_slip = "",
                                 wall_noslip = "bottom|top|obstacle", uin = uin, symmetric = symmetric, vol_force = None)
     return flow_settings
@@ -73,10 +70,10 @@ register(ST_2d, "ST_2d")
 ## 2D Schaefer Turek benchmark
 ##
 def ST_3d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False):
-    H, W, L = 0.41, 0.41, 2
+    H, W, L = 0.41, 0.41, 2.5
     geo = geo_3dchannel(H=H, W=W, L=L, obstacle=True)
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
-    uin = ngs.CoefficientFunction( (4 * (2/H)**2 * ngs.y * (H - ngs.y), 0, 0))
+    uin = ngs.CoefficientFunction( (( 2.25 * (2/H)**2 * (2/W)**2 * ngs.y * (H - ngs.y) * ngs.z * (W - ngs.z), 0, 0))
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "left", outlet = "right", wall_slip = "",
                                 wall_noslip = "wall|obstacle", uin = uin, symmetric = symmetric, vol_force = None)
     return flow_settings
