@@ -18,6 +18,7 @@ def gen_ref_mesh(geo, comm, maxh, nref = 0, mesh_file = "", load = False, save =
                 ngmesh.Distribute(comm)
         else:
             ngmesh = ngm.Mesh.Receive(comm)
+            ngmesh.SetGeometry(geo)
         for l in range(nref):
             ngmesh.Refine()
         mesh = ngs.comp.Mesh(ngmesh)
