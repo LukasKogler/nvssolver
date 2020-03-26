@@ -102,7 +102,7 @@ class FlowOptions:
 ### MCS Discretization ###
 
 class MCS:
-    def __init__(self, settings = None, order = 2, RT = False, hodivfree = False, compress = True, truecompile = False, pq_reg = 0, divdivpen = 0):
+    def __init__(self, settings = None, order = 2, RT = False, hodivfree = False, compress = True, truecompile = False, pq_reg = 0, divdivpen = 0, trace_sigma = False):
 
         self.settings = settings
         self.order = order
@@ -113,6 +113,7 @@ class MCS:
         self.truecompile = truecompile
         self.pq_reg = pq_reg
         self.ddp = divdivpen
+        self.trace_sigma = trace_sigma
 
         # Spaces
         self.V = ngs.HDiv(settings.mesh, order = self.order, RT = self.RT, hodivfree = self.hodivfree, \
@@ -124,9 +125,10 @@ class MCS:
             else: # not "correct", but works with facet-aux
                 self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, \
                                                        dirichlet = settings.inlet + "|" + settings.wall_noslip + "|")
-            self.Sigma = ngs.HCurlDiv(settings.mesh, order = order, GGBubbles = True, discontinuous = True, ordertrace = self.order)
+            self.Sigma = ngs.HCurlDiv(settings.mesh, order = order, GGBubbles = True, discontinuous = True, ordertrace = self.order if self.trace_sigma else -1)
             # self.Sigma = ngs.HCurlDiv(mesh, order=order + 1, discontinuous=True, ordertrace=order) # slower I think
             self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order)
+            raise Exception("AAA")
         else:
             if False: # "correct" version
                 # self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
@@ -136,7 +138,8 @@ class MCS:
             else: # works with facet-aux
                 self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
                                                        dirichlet = settings.inlet + "|" + settings.wall_noslip)
-            self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True, ordertrace = self.order-1)
+            self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True, ordertrace = self.order-1 if self.trace_sigma else -1)
+            # self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True)
             # self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True)
             self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order-1)
 
@@ -204,6 +207,8 @@ class MCS:
         self.a_vol = -1 / self.settings.nu * ngs.InnerProduct(sigma, tau) \
                      + ngs.div(sigma) * v \
                      + ngs.div(tau) * u
+        if not self.trace_sigma:
+            self.a_vol += self.settings.nu * ngs.div(u) * ngs.div(v)
         if self.sym:
            self.a_vol += ngs.InnerProduct(W, Skew2Vec(tau)) \
                          + ngs.InnerProduct(R, Skew2Vec(sigma))
@@ -214,11 +219,13 @@ class MCS:
         if self.settings.l2_coef is not None:
             self.a_vol += self.settings.l2_coef * ngs.InnerProduct(u, v)
             self.a_bnd += self.settings.l2_coef * ngs.InnerProduct(tang(uhat), tang(vhat))
+        self.b_vol = ngs.div(u) * q
+        self.bt_vol = ngs.div(v) * p
+
+        # This is useful in some cases.
         self.divdiv = ngs.div(u)*ngs.div(v)
         self.uv = ngs.InnerProduct(u, v)
         self.uhvh = ngs.InnerProduct(tang(uhat), tang(vhat))
-        self.b_vol = ngs.div(u) * q
-        self.bt_vol = ngs.div(v) * p
 
         if self.pq_reg != 0:
             self.c_vol = -self.pq_reg * self.settings.nu * p*q
@@ -699,8 +706,8 @@ class StokesTemplate():
             #         print("----")
 
             ainv = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = "umfpack")
-            S = self.B @ ainv @ self.B.T
-            # S = self.B @ self.Apre @ self.B.T
+            # S = self.B @ ainv @ self.B.T
+            S = self.B @ self.Apre @ self.B.T
             # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=ngs.IdentityMatrix(S.height), tol=1e-17))
             evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spreb, tol=1e-14))
             evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
@@ -711,8 +718,8 @@ class StokesTemplate():
                 print("cond-nr preS\S:", evs_S[-1]/(evs0))
                 print("----\n")
 
-            # if self.a.space.mesh.comm.rank == 0:
-            #     print("Test SC CG")
+            # # if self.a.space.mesh.comm.rank == 0:
+            # #     print("Test SC CG")
             # cgr = S.CreateColVector()
             # cgs = S.CreateColVector()
             # ngs.solvers.CG(mat = S, rhs = cgr , sol = cgs, pre = self.Spre,
