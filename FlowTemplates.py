@@ -2,6 +2,8 @@ import sys
 import ngsolve as ngs
 import netgen as ng
 
+from bramblepasciak import BramblePasciakCG
+
 _ngs_amg = True
 try:
     import ngs_amg
@@ -705,7 +707,7 @@ class StokesTemplate():
             #         print("cond-nr preA\A2:", evs_A[-1]/evs_A[0])
             #         print("----")
 
-            ainv = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = "umfpack")
+            # ainv = self.a.mat.Inverse(self.a.space.FreeDofs(self.elint), inverse = "umfpack")
             # S = self.B @ ainv @ self.B.T
             S = self.B @ self.Apre @ self.B.T
             # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=ngs.IdentityMatrix(S.height), tol=1e-17))
@@ -775,7 +777,7 @@ class StokesTemplate():
     def AssembleLinAlg(self):
         self.la.Assemble()
 
-    def Solve(self, tol = 1e-8, ms = 1000):
+    def Solve(self, tol = 1e-8, ms = 1000, bp = False):
 
         homogenize = len(self.settings.inlet)>0 and self.settings.uin is not None
 
@@ -796,8 +798,21 @@ class StokesTemplate():
         # ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, pre = self.la.Mpre,
         #                   tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
 
-        ngs.solvers.MinRes(mat = self.la.M, rhs = rhs_vec, sol = sol_vec, pre = self.la.Mpre,
-                           tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms) 
+        if bp:
+            if not self.la.block_la:
+                raise Exception("For BPCG, use block-PC!")
+            # scnd = (self.la.elint and not self.la.it_on_sc)
+            it, t_prep, t_it = BramblePasciakCG(blfA = self.la.a, blfB = self.la.b, matC = None, \
+                                                f = rhs_vec[0], g = rhs_vec[1], sol = sol_vec, \
+                                                preA_unscaled = self.la.Apre,
+                                                # k = 1/0.03,
+                                                # k = 1/0.05,
+                                                preM = self.la.Spre, \
+                                                staticcond = True,
+                                                initialize = True, tol = 1e-6, maxsteps = 1000, rel_err = True)
+        else:
+            ngs.solvers.MinRes(mat = self.la.M, rhs = rhs_vec, sol = sol_vec, pre = self.la.Mpre,
+                               tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms) 
 
         self.la.ExtendSol(sol_vec = sol_vec, rhs_vec = rhs_vec)
 
