@@ -91,11 +91,12 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
 
     ts = Timer("solve")
     ts.Start()
-    stokes.Solve(tol=1e-6, ms = 300, solver = "minres")
+    nits = stokes.Solve(tol=1e-6, ms = 300, solver = "minres")
     ts.Stop()
 
     if mpi_world.rank == 0:
         print("\n---\ntime setup", tsup.time)
+        print("nits = ", nits)
         print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (tsup.time * mpi_world.size) / 1000, "K" ) 
         print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (tsup.time * mpi_world.size) / 1000, "K" ) 
     if mpi_world.rank == 0:

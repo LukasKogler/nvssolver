@@ -831,6 +831,7 @@ class StokesTemplate():
             if self.la.need_bp_scale:
                 bp_cg.ScaleAhat(tol=1e-10)#, scal = 1.0/1.35)
             sol_vec.data = bp_cg * rhs_vec
+            nits = bp_cg.iterations
         elif solver == "gmres":
             # ngs.solvers.GMRes(A = self.la.M, b = rhs_vec, x = sol_vec, pre = self.la.Mpre,
             #                   tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
@@ -838,6 +839,7 @@ class StokesTemplate():
             gmres = GMResSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
                                 printrates = ngs.mpi_world.rank==0, rel_err=True)
             sol_vec.data = gmres * rhs_vec
+            nits = gmres.iterations
         elif solver == "minres":
             # note: to compare, use rel_err=False
             # ngs.solvers.MinRes(mat = self.la.M, rhs = rhs_vec, sol = sol_vec, pre = self.la.Mpre,
@@ -845,6 +847,7 @@ class StokesTemplate():
             minres = MinResSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
                                   printrates = ngs.mpi_world.rank==0, rel_err=True)
             sol_vec.data = minres * rhs_vec
+            nits = minres.iterations
         else:
             raise Exception("Use bp, gmres or minres as Solver!")
             
@@ -856,5 +859,6 @@ class StokesTemplate():
         #     print("SOL comp", k)
         #     print(self.la.gfu.components[k].vec)
 
+        return nits
 
 ### END Stokes Template ###
