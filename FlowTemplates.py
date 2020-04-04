@@ -510,14 +510,6 @@ class StokesTemplate():
                 else:
                     raise Exception("invalid pc type for A block!")
 
-                lams = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.Apre, tol=1e-10))
-                print("###############################")
-                print("NRONE")
-                print(lams[:10])
-                print("condition = ", lams[-1] / lams[0])
-                print("max(lams) = ", lams[-1])
-                print("min(lams) = ", lams[0])
-                print("###############################")
                 self.ASpre = self.Apre
 
                 if self.elint and not self.it_on_sc:
@@ -738,13 +730,23 @@ class StokesTemplate():
             ngs.ngsglobals.msg_level = 0
 
             evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=self.Apre, tol=1e-10))
-            
             if self.a.space.mesh.comm.rank == 0:
                 print("\n----")
+                print("Block-PC Condition number test")
+                print("--")
+                print("EVs for A block")
                 print("min ev. preA\A:", evs_A[:5])
                 print("max ev. preA\A:", evs_A[-5:])
                 print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
-                print("----")
+
+            if self.elint and not self.it_on_sc:
+                evs_AS = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.ASpre, tol=1e-10))
+                if self.a.space.mesh.comm.rank == 0:
+                    print("--")
+                    print("EVs for condensed A block")
+                    print("min ev. preA\A:", evs_AS[:5])
+                    print("max ev. preA\A:", evs_AS[-5:])
+                    print("cond-nr preA\A:", evs_AS[-1]/evs_AS[0])
             
             if exai:
                 if self.elint:
@@ -758,8 +760,10 @@ class StokesTemplate():
             evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
 
             if self.a.space.mesh.comm.rank == 0:
-                print("min ev. preS\S:", evs_S[0:20])
-                print("max ev. preS\S:", evs_S[-20:])
+                print("--")
+                print("EVs for Schur Complement")
+                print("min ev. preS\S:", evs_S[0:5])
+                print("max ev. preS\S:", evs_S[-5:])
                 print("cond-nr preS\S:", evs_S[-1]/(evs0))
                 print("----\n")
 
