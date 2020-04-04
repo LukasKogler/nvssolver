@@ -21,7 +21,8 @@ class IterativeSolver(ngs.BaseMatrix):
         self.iterations = it + 1
         if it == -1:
             self.err0 = err
-            print("Initial err = ", err)
+            if self.printrates:
+                print("Initial err = ", err)
         else:
             if self.printrates:
                 print("it = ", it, " err = ", err)
@@ -186,12 +187,12 @@ class BPCGSolver(IterativeSolver):
             err = sqrt(abs(wd))
             if self.CheckError(it, err):
                 self.timer_its.Stop()   
-                break
-        else:
-            self.iterations = -1
-            if ngs.mpi_world.rank==0:
-                print("Warning: BPCG did not converge to TOL")
+                return
 
+        self.timer_its.Stop()
+        self.iterations = -int(abs(self.iterations))
+        if ngs.mpi_world.rank==0:
+            print("Warning: BPCG did not converge to TOL")
 
 
 class GMResSolver(IterativeSolver):
@@ -297,12 +298,16 @@ class GMResSolver(IterativeSolver):
             beta[k] = cs[k] * beta[k]
             error = abs(beta[k+1])
             if self.CheckError(curr_it, error):
-                break
+                return
             curr_it += 1
             if self.restart and k+1 == self.restart and not (self.restart == self.maxsteps):
                 calcSolution(k, H, Q, x, initialize)
                 del Q
                 self.Solve_impl(sol=sol, rhs=rhs, curr_it=curr_it)
+
+        self.iterations = -int(abs(self.iterations))
+        if ngs.mpi_world.rank==0:
+            print("Warning: GMRes did not converge to TOL")
 
     def Solve(self, rhs : ngs.BaseVector, sol : ngs.BaseVector, initialize : bool = True):
         self.Solve_impl(rhs=rhs, sol=sol, curr_it=0, initialize=initialize)
@@ -379,7 +384,7 @@ class MinResSolver(IterativeSolver):
             ResNorm = abs(s_new) * ResNorm_old
 
             if self.CheckError(k, ResNorm):
-                break
+                return
 
             v_old, v, v_new = v, v_new, v_old
             w_old, w, w_new = w, w_new, w_old
@@ -390,4 +395,6 @@ class MinResSolver(IterativeSolver):
             gamma = gamma_new
             ResNorm_old = ResNorm
 
-        print("Warning: MinRes did not converge to TOL")
+        self.iterations = -int(abs(self.iterations))
+        if ngs.mpi_world.rank==0:
+            print("Warning: MinRes did not converge to TOL")
