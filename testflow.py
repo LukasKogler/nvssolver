@@ -9,26 +9,32 @@ from FlowTemplates import StokesTemplate
 
 ngsglobals.msg_level = 1
 
-# flow_settings = ST_2d(maxh=0.1, nu=1)
-# flow_settings.mesh.Curve(3)
-# pqr = 0
-
-flow_settings = channel2d(maxh=0.1, nu=1, L=1)
+flow_settings = ST_2d(maxh=0.1, nu=1e-3)
+flow_settings.mesh.Curve(3)
 pqr = 0
 
-# flow_settings = ST_3d(maxh=10, nu=1)
+# flow_settings = channel2d(maxh=0.1, nu=1e-3, L=5)
 # pqr = 0
+
+# flow_settings = ST_3d(maxh=0.05, nu=1)
 # flow_settings.mesh.Curve(3)
+# pqr = 0
 
 # flow_settings = vortex2d(maxh=0.2, nu=1)
-pqr = 1e-6
+# pqr = 1e-6
+
+print("verts " , flow_settings.mesh.nv)
+print("edges " , flow_settings.mesh.nedge)
+print("facets " , flow_settings.mesh.nfacet)
+print("els " , flow_settings.mesh.ne)
 
 disc_opts = { "order" : 2,
-              "hodivfree" : True,
+              "hodivfree" : False,
               "truecompile" : False, #mpi_world.size == 1,
               "RT" : False,
               "compress" : True,
               #"divdivpen" : 0,
+              "trace_sigma" : False,
               "divdivpen" : 0,
               "pq_reg" : pqr }
 
@@ -37,13 +43,13 @@ sol_opts = { "elint" : True,
              "pc_ver" : "block", # "block", "direct"
              "pc_opts" : {
                  "a_opts" : {
-                     #"type" : "direct",
+                     "type" : "direct",
                      # "inv_type" : "mumps",
                      # "type" : "auxfacet",
                      "type" : "auxh1", 
-                     #"amg_package" : "petsc",
-                     # "amg_package" : "ngs_amg",
-                     "amg_package" : "direct", # direct solve in auxiliary space
+                     # "amg_package" : "petsc",
+                     "amg_package" : "ngs_amg",
+                     # "amg_package" : "direct", # direct solve in auxiliary space
                      "mlt_smoother" : True,
                      "el_blocks" : False,
                      # "type" : "stokesamg", 
@@ -66,21 +72,27 @@ sol_opts = { "elint" : True,
              }
 }
 
-SetNumThreads(1)
+# SetNumThreads(1)
 with TaskManager():#pajetrace = 50 * 2024 * 1024):
 
     tsup = Timer("solve")
     tsup.Start()
     stokes = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts )
     tsup.Stop()
-    
-    ts = Timer("solve")
-    ts.Start()
-    stokes.Solve(tol=1e-6, ms = 3000)
-    ts.Stop()
+
+    X = stokes.disc.X
+    Q = stokes.disc.X
+    print("X0 ndof", sum(X.components[0].FreeDofs(True)))
+    print("X1 ndof", sum(X.components[1].FreeDofs(True)))
+    print("X  ndof", sum(X.FreeDofs(True)))
 
     if sol_opts["pc_ver"] == "block":
         stokes.la.TestBlock()
+
+    ts = Timer("solve")
+    ts.Start()
+    stokes.Solve(tol=1e-6, ms = 800, use_bp = True)
+    ts.Stop()
 
     if mpi_world.rank == 0:
         print("\n---\ntime setup", tsup.time)
@@ -93,7 +105,7 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
 
     
     Draw(stokes.velocity, stokes.settings.mesh, "velocity")
-        # stokes.la.TestBlock()
+    # stokes.la.TestBlock()
 
 sys.stdout.flush()
 # quit()
