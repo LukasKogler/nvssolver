@@ -16,7 +16,7 @@ pqr = 0
 # flow_settings = channel2d(maxh=0.1, nu=1e-3, L=5)
 # pqr = 0
 
-# flow_settings = ST_3d(maxh=0.05, nu=1)
+# flow_settings = ST_3d(maxh=0.1, nu=1e-2)
 # flow_settings.mesh.Curve(3)
 # pqr = 0
 
@@ -73,7 +73,7 @@ sol_opts = { "elint" : True,
 }
 
 # SetNumThreads(1)
-with TaskManager():#pajetrace = 50 * 2024 * 1024):
+with TaskManager(pajetrace = 50 * 2024 * 1024):
 
     tsup = Timer("solve")
     tsup.Start()
@@ -91,7 +91,7 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
 
     ts = Timer("solve")
     ts.Start()
-    stokes.Solve(tol=1e-6, ms = 800, use_bp = True)
+    stokes.Solve(tol=1e-6, ms = 300, solver = "minres")
     ts.Stop()
 
     if mpi_world.rank == 0:
