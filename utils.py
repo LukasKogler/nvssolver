@@ -18,6 +18,7 @@ def gen_ref_mesh(geo, comm, maxh, nref = 0, mesh_file = "", load = False, save =
                 ngmesh.Distribute(comm)
         else:
             ngmesh = ngm.Mesh.Receive(comm)
+            ngmesh.SetGeometry(geo)
         for l in range(nref):
             ngmesh.Refine()
         mesh = ngs.comp.Mesh(ngmesh)
@@ -59,7 +60,7 @@ def ST_2d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False):
     H, L = 0.41, 2.2
     geo = geo_2dchannel(H=H, L=L, obstacle=True)
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
-    uin = ngs.CoefficientFunction( (1.5 * (2/H)**2 * ngs.y * (H - ngs.y), 0))
+    uin = ngs.CoefficientFunction( (1.5 * (2/H)**2 * ngs.y * (H - ngs.y), 0) )
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "left", outlet = "right", wall_slip = "",
                                 wall_noslip = "bottom|top|obstacle", uin = uin, symmetric = symmetric, vol_force = None)
     return flow_settings
@@ -73,7 +74,7 @@ def ST_3d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False):
     H, W, L = 0.41, 0.41, 2.5
     geo = geo_3dchannel(H=H, W=W, L=L, obstacle=True)
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
-    uin = ngs.CoefficientFunction( (( 2.25 * (2/H)**2 * (2/W)**2 * ngs.y * (H - ngs.y) * ngs.z * (W - ngs.z), 0, 0))
+    uin = ngs.CoefficientFunction( ( 2.25 * (2/H)**2 * (2/W)**2 * ngs.y * (H - ngs.y) * ngs.z * (W - ngs.z), 0, 0) )
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "left", outlet = "right", wall_slip = "",
                                 wall_noslip = "wall|obstacle", uin = uin, symmetric = symmetric, vol_force = None)
     return flow_settings
