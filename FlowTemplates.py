@@ -2,7 +2,8 @@ import sys
 import ngsolve as ngs
 import netgen as ng
 
-from bp2 import BPCGSolver
+# from krylovspace_extension import BPCGSolver
+from krylovspace_extension import BPCGSolver, GMResSolver, MinResSolver
 
 
 _ngs_amg = True
@@ -805,7 +806,7 @@ class StokesTemplate():
     def AssembleLinAlg(self):
         self.la.Assemble()
 
-    def Solve(self, tol = 1e-8, ms = 1000, use_bp = False):
+    def Solve(self, tol = 1e-8, ms = 1000, solver = "minres"):
 
         homogenize = len(self.settings.inlet)>0 and self.settings.uin is not None
 
@@ -820,21 +821,33 @@ class StokesTemplate():
             sol_vec = self.la.sol_vec
             rhs_vec = self.la.rhs_vec
 
-        if use_bp:
+        self.la.PrepRHS(rhs_vec = rhs_vec)
+        
+        if solver == "bp":
             if not self.la.block_la:
                 raise Exception("For BPCG, use block-PC!")
-            # scnd = (self.la.elint and not self.la.it_on_sc)
-            bp_cg = BPCGSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol, printrates = ngs.mpi_world.rank==0)
+            bp_cg = BPCGSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
+                               printrates = ngs.mpi_world.rank==0, rel_err=True)
             if self.la.need_bp_scale:
-                bp_cg.ScaleAhat(tol=1e-10)
+                bp_cg.ScaleAhat(tol=1e-10)#, scal = 1.0/1.35)
             sol_vec.data = bp_cg * rhs_vec
-        else:
-            self.la.PrepRHS(rhs_vec = rhs_vec)
-            # ngs.solvers.GMRes(A = self.la.M, b = self.la.rhs, x = sv2, pre = self.la.Mpre,
+        elif solver == "gmres":
+            # ngs.solvers.GMRes(A = self.la.M, b = rhs_vec, x = sol_vec, pre = self.la.Mpre,
             #                   tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
-            ngs.solvers.MinRes(mat = self.la.M, rhs = rhs_vec, sol = sol_vec, pre = self.la.Mpre,
-                               tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms) 
-
+            # note: to compare, use rel_err=False
+            gmres = GMResSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
+                                printrates = ngs.mpi_world.rank==0, rel_err=True)
+            sol_vec.data = gmres * rhs_vec
+        elif solver == "minres":
+            # note: to compare, use rel_err=False
+            # ngs.solvers.MinRes(mat = self.la.M, rhs = rhs_vec, sol = sol_vec, pre = self.la.Mpre,
+                               # tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms)
+            minres = MinResSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
+                                  printrates = ngs.mpi_world.rank==0, rel_err=True)
+            sol_vec.data = minres * rhs_vec
+        else:
+            raise Exception("Use bp, gmres or minres as Solver!")
+            
         self.la.ExtendSol(sol_vec = sol_vec, rhs_vec = rhs_vec)
         if homogenize:
             self.la.sol_vec.data += sol_vec
