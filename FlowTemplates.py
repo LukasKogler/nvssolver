@@ -740,14 +740,14 @@ class StokesTemplate():
                 print("max ev. preA\A:", evs_A[-5:])
                 print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
 
-            if self.elint and not self.it_on_sc:
-                evs_AS = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.ASpre, tol=1e-10))
-                if self.a.space.mesh.comm.rank == 0:
-                    print("--")
-                    print("EVs for condensed A block")
-                    print("min ev. preA\A:", evs_AS[:5])
-                    print("max ev. preA\A:", evs_AS[-5:])
-                    print("cond-nr preA\A:", evs_AS[-1]/evs_AS[0])
+            # if self.elint and not self.it_on_sc:
+            #     evs_AS = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.ASpre, tol=1e-10))
+            #     if self.a.space.mesh.comm.rank == 0:
+            #         print("--")
+            #         print("EVs for condensed A block")
+            #         print("min ev. preA\A:", evs_AS[:5])
+            #         print("max ev. preA\A:", evs_AS[-5:])
+            #         print("cond-nr preA\A:", evs_AS[-1]/evs_AS[0])
             
             if exai:
                 if self.elint:
