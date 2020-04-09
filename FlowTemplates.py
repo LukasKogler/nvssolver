@@ -179,21 +179,17 @@ class MCS:
         else:
             self.S = None
 
-
         if self.compress:
             self.Sigma.SetCouplingType(ngs.IntRange(0, self.Sigma.ndof), ngs.COUPLING_TYPE.HIDDEN_DOF)
             self.Sigma = ngs.Compress(self.Sigma)
             if self.sym:
                 self.S.SetCouplingType(ngs.IntRange(0, self.S.ndof), ngs.COUPLING_TYPE.HIDDEN_DOF)
                 self.S = ngs.Compress(self.S)
-            
-        if self.sym:
-            self.X = ngs.FESpace([self.V, self.Vhat, self.Sigma, self.S])
-        else:
-            self.X = ngs.FESpace([self.V, self.Vhat, self.Sigma])
+
 
     def Compile (self, term):
         return term.Compile(realcompile = self.truecompile, wait = True)
+
     
     def SetUpForms(self, compound = False):
 
@@ -231,11 +227,12 @@ class MCS:
                 v, vhat, tau = self.X.TestFunction()
             p,q = self.Q.TnT()
 
-        self.a_vol = -1 / self.settings.nu * ngs.InnerProduct(sigma, tau) \
+        nu = 2 * self.settings.nu if self.settings.sym else self.settings.nu
+        self.a_vol = -1 / nu * ngs.InnerProduct(sigma, tau) \
                      + ngs.div(sigma) * v \
                      + ngs.div(tau) * u
         if not self.trace_sigma:
-            self.a_vol += self.settings.nu * ngs.div(u) * ngs.div(v)
+            self.a_vol += nu * ngs.div(u) * ngs.div(v)
         if self.sym:
            self.a_vol += ngs.InnerProduct(W, Skew2Vec(tau)) \
                          + ngs.InnerProduct(R, Skew2Vec(sigma))
@@ -255,7 +252,7 @@ class MCS:
         self.uhvh = ngs.InnerProduct(self.tang(uhat), self.tang(vhat))
 
         if self.pq_reg != 0:
-            self.c_vol = -self.pq_reg * self.settings.nu * p * q
+            self.c_vol = -self.pq_reg * nu * p * q
         else:
             self.c_vol = None
 
@@ -277,11 +274,6 @@ class MCS:
         if self._stokesA == None:
             self._stokesA = self.Compile(self.a_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
         return self._stokesA
-
-    def stokesM(self):
-        if self._stokesM == None:
-            self._stokesM = self.Compile(self.a_vol + self.b_vol + self.bt_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
-        return self._stokesM
 
     def stokesB(self):
         if self._stokesB == None:
@@ -399,8 +391,15 @@ class StokesTemplate():
                                                   self.g.vec] )
             else:
                 self.M = self.m.mat
+                if self.elint and not self.it_on_sc:
+                    Mhex, Mhext, Mii  = self.m.harmonic_extension, self.m.harmonic_extension_trans, self.m.inner_matrix
+                    Id = ngs.IdentityMatrix(self.M.height)
+                    self.M = (Id - Mhext) @ (self.M.local_mat + Mii) @ (Id - Mhex)
+                    if self.m.space.mesh.comm.size > 1:
+                        self.M = ngs.ParallelMatrix(self.Mext, row_pardofs = self.m.mat.row_pardofs, \
+                                                       col_pardofs = self.m.mat.col_pardofs, op = ngs.ParallelMatrix.C2D)
                 self.rhs_vec = self.f.vec
-                                           
+
             if not pc_ver in self.pc_avail:
                 raise Exception("invalid PC version!")
             else:
@@ -415,12 +414,17 @@ class StokesTemplate():
                 self.a += stokes.disc.stokesA()
                 # self.a += 1e2 * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
 
-                self.a2 = ngs.BilinearForm(stokes.disc.X, condense = self.elint, eliminate_hidden = stokes.disc.compress, \
-                                          store_inner = self.elint and not self.it_on_sc)
-                self.a2 += stokes.disc.stokesA()
-                self.a2 += stokes.disc.ddp * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
+                if stokes.disc.ddp != 0:
+                    self.a2 = ngs.BilinearForm(stokes.disc.X, condense = self.elint, eliminate_hidden = stokes.disc.compress, \
+                                               store_inner = self.elint and not self.it_on_sc)
+                    self.a2 += stokes.disc.stokesA()
+                    self.a2 += stokes.disc.ddp * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
+                else:
+                    self.a2 = self.a
                 # self.a2 += 1e-4 * stokes.settings.nu * stokes.disc.uv * ngs.dx
                 # self.a2 += 1e-4 * stokes.settings.nu * stokes.disc.uhvh * ngs.dx(element_vb=ngs.BND)
+
+                # self.a = self.a2
 
                 self.b = ngs.BilinearForm(trialspace = stokes.disc.X, testspace = stokes.disc.Q)
                 self.b += stokes.disc.stokesB()
@@ -435,11 +439,19 @@ class StokesTemplate():
 
             else:
                 if self.elint:
-                    raise Exception("Static condensation for entire system does not work yet!")
-                self.m = ngs.BilinearForm(stokes.disc.Xext, condense = self.elint, eliminate_hidden = stokes.disc.compress)
+                    if not stokes.disc.hodivfree:
+                        raise Exception("Static condensation for entire system only with hodivfree!")
+                    stokes.disc.Q.SetCouplingType(ngs.IntRange(0, stokes.disc.Q.ndof), ngs.COUPLING_TYPE.WIREBASKET_DOF)
+                    stokes.disc.Q.FinalizeUpdate()
+                    stokes.disc.Xext.SetCouplingType(ngs.IntRange(stokes.disc.X.ndof, stokes.disc.Xext.ndof), ngs.COUPLING_TYPE.WIREBASKET_DOF)
+                    stokes.disc.Xext.FinalizeUpdate()
+                self.m = ngs.BilinearForm(stokes.disc.Xext, condense = self.elint, eliminate_hidden = stokes.disc.compress,
+                                          tore_inner = self.elint and not self.it_on_sc)
                 self.m += stokes.disc.stokesM()
 
                 self._to_assemble += [ self.m ]
+                self.a = self.m
+                self.a2 = self.m
                 
                 
         def SetUpRHS(self, stokes):
@@ -476,6 +488,7 @@ class StokesTemplate():
             if self.it_on_sc:
                 sv = sol_vec[0] if self.block_la else sol_vec 
                 rv = rhs_vec[0] if self.block_la else rhs_vec
+                rv.Distribute()
                 sv.Cumulate()
                 sv.local_vec.data += self.a.inner_solve * rv.local_vec
                 sv.local_vec.data += self.a.harmonic_extension * sv.local_vec
@@ -485,10 +498,21 @@ class StokesTemplate():
             if self.block_la:
                 raise Exception("Cannot invert block matrices!")
             else:
-                if self.elint:
-                    raise Exception("Direct inverse + static condenstation not possible yet!")
                 itype = "umfpack" if inv_type is None else inv_type
-                self.Mpre = self.M.Inverse(stokes.disc.Xext.FreeDofs(self.elint), inverse = itype)
+                self.Mpre = self.m.mat.Inverse(stokes.disc.Xext.FreeDofs(self.elint), inverse = itype)
+                if self.elint and not self.it_on_sc:
+                    Mhex, Mhext, Miii  = self.m.harmonic_extension, self.m.harmonic_extension_trans, self.m.inner_solve
+                    Id = ngs.IdentityMatrix(self.M.height)
+                    if self.m.space.mesh.comm.size == 1:
+                        self.Mpre = ((Id + Mhex) @ (self.Mpre) @ (Id + Mhext)) + Miii
+                    else:
+                        Ihex = ngs.ParallelMatrix(Id + Mhex, row_pardofs = self.m.mat.row_pardofs,
+                                                  col_pardofs = self.m.mat.row_pardofs, op = ngs.ParallelMatrix.C2C)
+                        Ihext = ngs.ParallelMatrix(Id + Mhext, row_pardofs = self.m.mat.row_pardofs,
+                                                   col_pardofs = self.m.mat.row_pardofs, op = ngs.ParallelMatrix.D2D)
+                        Isolve = ngs.ParallelMatrix(Miii, row_pardofs = self.m.mat.row_pardofs,
+                                                    col_pardofs = self.m.mat.row_pardofs, op = ngs.ParallelMatrix.D2C)
+                        self.Mpre = ( Ihex @ self.Mpre @ Ihext ) + Isolve
             
         def SetUpBlock(self, stokes, a_opts = { "type" : "direct" } , **kwargs):
             if not self.block_la:
@@ -498,10 +522,12 @@ class StokesTemplate():
                 self.massp = ngs.BilinearForm(stokes.disc.Q)
                 if stokes.disc.stokesC() is not None:
                     self.massp += -1 * stokes.disc.stokesC()
-                self.massp +=  1/stokes.settings.nu * p * q * ngs.dx
+                if stokes.disc.ddp == 0:
+                    self.massp +=  1/stokes.settings.nu * p * q * ngs.dx
+                else:
+                    self.massp +=  1/(stokes.settings.nu * stokes.disc.ddp) * p * q * ngs.dx
                 # self.Spre = ngs.Preconditioner(self.massp, "direct")
                 self.Spre = ngs.Preconditioner(self.massp, "local")
-                self.Spreb = self.Spre # bare
 
                 self.massp.Assemble()
 
@@ -514,7 +540,7 @@ class StokesTemplate():
                 self.ASpre = self.Apre
 
                 if self.elint and not self.it_on_sc:
-                    Ahex, Ahext, Aiii  = self.a.harmonic_extension, self.a.harmonic_extension_trans, self.a.inner_solve
+                    Ahex, Ahext, Aiii  = self.a2.harmonic_extension, self.a2.harmonic_extension_trans, self.a2.inner_solve
                     # print("Ahex ", Ahex)
                     # print("Ahext", Ahext)
                     # print("Aiii ", Aiii)
@@ -529,7 +555,7 @@ class StokesTemplate():
                         Isolve = ngs.ParallelMatrix(Aiii, row_pardofs = self.a.mat.row_pardofs,
                                                     col_pardofs = self.a.mat.row_pardofs, op = ngs.ParallelMatrix.D2C)
                         self.Apre = ( Ihex @ self.Apre @ Ihext ) + Isolve
-                
+               
                 self.Mpre = ngs.BlockMatrix( [ [self.Apre, None],
                                                [None, self.Spre] ] )
 
@@ -575,7 +601,7 @@ class StokesTemplate():
             a_aux = ngs.BilinearForm(V)
             if stokes.settings.sym:
                 eps = lambda U : 0.5 * (ngs.grad(U) + ngs.grad(U).trans)
-                a_aux += stokes.settings.nu * ngs.InnerProduct(eps(u), eps(v)) * ngs.dx
+                a_aux += 2 * stokes.settings.nu * ngs.InnerProduct(eps(u), eps(v)) * ngs.dx
                 if not use_petsc:
                     amg_cl = ngs_amg.elast_2d if stokes.settings.mesh.dim == 2 else ngs_amg.elast_3d
             else:
@@ -757,7 +783,8 @@ class StokesTemplate():
             else:
                 S = self.B @ self.Apre @ self.B.T
 
-            evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spreb, tol=1e-14))
+            evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-14))
+            # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=ngs.IdentityMatrix(S.height), tol=1e-14))
             evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
 
             if self.a.space.mesh.comm.rank == 0:
@@ -810,19 +837,19 @@ class StokesTemplate():
 
         homogenize = len(self.settings.inlet)>0 and self.settings.uin is not None
 
+        rhs_vec = self.la.rhs_vec.CreateVector()
+        rhs_vec.data = self.la.rhs_vec
+        self.la.PrepRHS(rhs_vec = rhs_vec)
         if homogenize:
+            sol_vec = self.la.sol_vec.CreateVector()
             self.velocity.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inlet))
             self.velhat.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inlet))
-            rhs_vec = self.la.rhs_vec.CreateVector()
-            rhs_vec.data = self.la.rhs_vec
-            rhs_vec -= self.la.M * self.la.sol_vec 
-            sol_vec = self.la.sol_vec.CreateVector()
+            rhs_vec.data -= self.la.M * self.la.sol_vec 
         else:
             sol_vec = self.la.sol_vec
-            rhs_vec = self.la.rhs_vec
 
         self.la.PrepRHS(rhs_vec = rhs_vec)
-        
+
         if solver == "bp":
             if not self.la.block_la:
                 raise Exception("For BPCG, use block-PC!")
@@ -832,6 +859,7 @@ class StokesTemplate():
                 bp_cg.ScaleAhat(tol=1e-10)#, scal = 1.0/1.35)
             sol_vec.data = bp_cg * rhs_vec
             nits = bp_cg.iterations
+            self.solver = bp_cg
         elif solver == "gmres":
             # ngs.solvers.GMRes(A = self.la.M, b = rhs_vec, x = sol_vec, pre = self.la.Mpre,
             #                   tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
@@ -840,20 +868,28 @@ class StokesTemplate():
                                 printrates = ngs.mpi_world.rank==0, rel_err=True)
             sol_vec.data = gmres * rhs_vec
             nits = gmres.iterations
+            self.solver = gmres
+        elif solver == "apply_pc":
+            sol_vec.data = self.la.Mpre * rhs_vec
+            nits = 1
         elif solver == "minres":
             # note: to compare, use rel_err=False
             # ngs.solvers.MinRes(mat = self.la.M, rhs = rhs_vec, sol = sol_vec, pre = self.la.Mpre,
                                # tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms)
+            # nits = -1
             minres = MinResSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
                                   printrates = ngs.mpi_world.rank==0, rel_err=True)
             sol_vec.data = minres * rhs_vec
             nits = minres.iterations
+            self.solver = minres
         else:
             raise Exception("Use bp, gmres or minres as Solver!")
-            
-        self.la.ExtendSol(sol_vec = sol_vec, rhs_vec = rhs_vec)
+
+
         if homogenize:
             self.la.sol_vec.data += sol_vec
+
+        self.la.ExtendSol(sol_vec = self.la.sol_vec, rhs_vec = rhs_vec)
 
         # for k, comp in enumerate(self.la.gfu.components):
         #     print("SOL comp", k)
