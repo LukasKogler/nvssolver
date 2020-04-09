@@ -363,17 +363,17 @@ class MinResSolver(IterativeSolver):
 
             z_new.data = self.Mhat * v_new if self.Mhat is not None else v_new
 
-            gamma_new = sqrt(ngs.InnerProduct(z_new, v_new))
-            z_new *= 1/gamma_new
-            v_new *= 1/gamma_new
+            # this can be -eps when we plug in a direct solver as preconditioner
+            gamma_new_sq = ngs.InnerProduct(z_new, v_new)
 
             alpha0 = c * delta - c_old * s * gamma    
-            alpha1 = sqrt(alpha0 * alpha0 + gamma_new * gamma_new) #**
+            alpha1 = sqrt(alpha0 * alpha0 + gamma_new_sq) #**
             alpha2 = s * delta + c_old * c * gamma
             alpha3 = s_old * gamma
 
             c_new = alpha0/alpha1
-            s_new = gamma_new/alpha1
+            # we are cheating if gamma_new is -eps, in which case we return enyways before it matters
+            s_new = sqrt(abs(gamma_new_sq))/alpha1
 
             w_new.data = z - alpha3 * w_old - alpha2 * w
             w_new.data = 1/alpha1 * w_new   
@@ -385,6 +385,11 @@ class MinResSolver(IterativeSolver):
 
             if self.CheckError(k, ResNorm):
                 return
+
+            # ok, now sqrt should be safe
+            gamma_new = sqrt(gamma_new_sq)
+            z_new *= 1/gamma_new
+            v_new *= 1/gamma_new
 
             v_old, v, v_new = v, v_new, v_old
             w_old, w, w_new = w, w_new, w_old
