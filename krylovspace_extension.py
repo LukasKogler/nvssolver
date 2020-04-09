@@ -373,7 +373,7 @@ class MinResSolver(IterativeSolver):
 
             c_new = alpha0/alpha1
             # we are cheating if gamma_new is -eps, in which case we return enyways before it matters
-            s_new = sqrt(abs(gamma_new_sq))/alpha1
+            s_new = sqrt(abs(gamma_new))/alpha1
 
             w_new.data = z - alpha3 * w_old - alpha2 * w
             w_new.data = 1/alpha1 * w_new   
