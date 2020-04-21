@@ -204,17 +204,18 @@ class GMResSolver(IterativeSolver):
         self.M = M
         self.Mhat = Mhat
         self.restart = restart
-        if innerproduct is None:
-            self.innerproduct = lambda x,y: y.InnerProduct(x, conjugate=True)
-            self.norm = ngs.Norm
-        else:
-            self.innerproduct = innerproduct
-            self.norm = lambda x: sqrt(innerproduct(x,x).real)
         self.tmp = self.M.CreateColVector()
         self.r = self.M.CreateColVector()
         # self.is_complex = self.M.is_complex # BlockMatrix has no is_complex
         self.is_complex = self.tmp.is_complex
-        
+        if innerproduct is None:
+            self.innerproduct = lambda x, y : y.InnerProduct(x, conjugate=self.is_complex)
+            self.norm = ngs.Norm
+        else:
+            self.innerproduct = innerproduct
+            self.norm = lambda x : sqrt(innerproduct(x,x).real)
+        self.restarts = 0
+
     def arnoldi(self, A, Ahat, Q, m, k):
         q = A.CreateColVector()
         self.tmp.data = A * Q[k]
@@ -250,21 +251,26 @@ class GMResSolver(IterativeSolver):
         h[k] = cs[k] * h[k] + sn[k] * h[k+1]
         h[k+1] = 0
 
-    def calcSolution(self, k, H, Q, x, initialize):
+    def calcSolution(self, k, H, Q, beta, x):
         mat = ngs.Matrix(k+1,k+1, self.is_complex)
         for i in range(k+1):
             mat[:,i] = H[i][:k+1]
         rs = ngs.Vector(k+1, self.is_complex)
         rs[:] = beta[:k+1]
         y = mat.I * rs
-        if initialize:
-            x[:] = 0
         for i in range(k+1):
             x.data += y[i] * Q[i]
 
     def Solve_impl(self, rhs, sol, curr_it, initialize):
         if sol is None:
             sol = self.M.CreateColVector()
+            sol[:] = 0
+        if initialize:
+            sol[:] = 0
+        if curr_it == 0:
+            self.restarts = 0
+        else:
+            self.restarts += 1
 
         m = self.maxsteps - curr_it
         sn, cs = ngs.Vector(m, self.is_complex), ngs.Vector(m, self.is_complex)
@@ -279,7 +285,8 @@ class GMResSolver(IterativeSolver):
         Q.append(self.M.CreateColVector())
         r_norm = self.norm(self.r)
 
-        self.CheckError(-1, r_norm)
+        if curr_it == 0:
+            self.CheckError(-1, r_norm)
 
         Q[0].data = 1./r_norm * self.r
 
@@ -298,12 +305,14 @@ class GMResSolver(IterativeSolver):
             beta[k] = cs[k] * beta[k]
             error = abs(beta[k+1])
             if self.CheckError(curr_it, error):
+                self.calcSolution(k, H, Q, beta, sol)
                 return
             curr_it += 1
             if self.restart and k+1 == self.restart and not (self.restart == self.maxsteps):
-                calcSolution(k, H, Q, x, initialize)
+                self.calcSolution(k, H, Q, beta, sol)
                 del Q
-                self.Solve_impl(sol=sol, rhs=rhs, curr_it=curr_it)
+                self.Solve_impl(sol=sol, rhs=rhs, curr_it=curr_it, initialize=False)
+                return
 
         self.iterations = -int(abs(self.iterations))
         if ngs.mpi_world.rank==0:
