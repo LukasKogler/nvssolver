@@ -92,8 +92,43 @@ class SPCST (ngs.BaseMatrix):
             self.S.SmoothBack(x, b, self.res, False, False, False)
         else:
             self.S.SmoothBack(x, b)
-        
 
+# Schoeberl-Zulehner PC
+class SZPC(ngs.BaseMatrix):
+    def __init__(self, M, Ahat, Shat):
+        super(SZPC, self).__init__()
+        self.M = M
+        self.A, self.B, self.BT = M[0,0], M[1,0], M[0,1]
+        self.Ahat = Ahat
+        self.Shat = Shat
+        self.mBTSg2 = self.A.CreateColVector()
+        self.g2 = self.Shat.CreateColVector()
+        self.xtemp = self.M.CreateColVector()
+    def IsComplex(self):
+        return False
+    def Height(self):
+        return self.M.height
+    def Width(self):
+        return self.M.width
+    def CreateColVector(self):
+        return self.M.CreateColVector()
+    def CreateRowVector(self):
+        return self.M.CreateRowVector()
+    def Mult(self, b, x):
+        f, g = b[0], b[1]
+        x[0].data = self.Ahat * f
+        self.g2.data = g - self.B * x[0]
+        x[1].data = - self.Shat * self.g2
+        self.mBTSg2.data = self.BT * x[1]
+        x[0].data -= self.Ahat * self.mBTSg2
+    def MultTrans(self, b, x):
+        self.Mult(b, x)
+    def MultAdd(self, scal, b, x):
+        self.Mult(b, self.xtemp)
+        x.data += scal * self.xtemp
+    def MultTransAdd(self, scal, b, x):
+        self.MultAdd(scal, b, x)
+        
 ### END Misc Utilities ###
 
 
@@ -158,7 +193,7 @@ class MCS:
             self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order)
             raise Exception("AAA")
         else:
-            if True: # "correct" version
+            if False: # "correct" version
                 # self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
                                                        # dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
                 self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
@@ -260,6 +295,8 @@ class MCS:
             self.f_vol = self.settings.vol_force * v
         else:
             self.f_vol = None
+
+        # self.f_bnd = self.settings.uin * v
             
         self._stokesM = None
         self._stokesA = None
@@ -309,6 +346,7 @@ class MCS:
     def stokesf(self):
         if self._stokesf == None and self.f_vol is not None:
             self._stokesf = self.Compile(self.f_vol) * ngs.dx
+        # self._stokesf = self.Compile(self.f_bnd) * ngs.ds
         return self._stokesf
 
 ### END MCS Discretization ###
@@ -415,16 +453,19 @@ class StokesTemplate():
                 # self.a += 1e2 * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
 
                 if stokes.disc.ddp != 0:
+                    u, uhat, sigma = stokes.disc.X.TrialFunction()
+                    v, vhat, tau = stokes.disc.X.TestFunction()
                     self.a2 = ngs.BilinearForm(stokes.disc.X, condense = self.elint, eliminate_hidden = stokes.disc.compress, \
                                                store_inner = self.elint and not self.it_on_sc)
                     self.a2 += stokes.disc.stokesA()
                     self.a2 += stokes.disc.ddp * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
+                    self.a2 += 1e2/stokes.disc.h * stokes.settings.nu * ngs.InnerProduct(stokes.disc.normal(u), stokes.disc.normal(v)) * ngs.dx
                 else:
                     self.a2 = self.a
                 # self.a2 += 1e-4 * stokes.settings.nu * stokes.disc.uv * ngs.dx
                 # self.a2 += 1e-4 * stokes.settings.nu * stokes.disc.uhvh * ngs.dx(element_vb=ngs.BND)
 
-                # self.a = self.a2
+                self.a = self.a2
 
                 self.b = ngs.BilinearForm(trialspace = stokes.disc.X, testspace = stokes.disc.Q)
                 self.b += stokes.disc.stokesB()
@@ -746,7 +787,16 @@ class StokesTemplate():
             blf = self.a2
             # self.Apre = ngs.Preconditioner(blf, "direct")
             self.Apre = ngs_amg.stokes_gg_2d(blf, **amg_opts)
+
+            # inlet_dofs = stokes.disc.X.GetDofs(stokes.settings.mesh.Boundaries(stokes.settings.inlet))
+            # a2f = stokes.disc.X.FreeDofs() | inlet_dofs
+            # self.Apre.SetFreeDofs(a2f)
+
+            # self.Apre = ngs.Preconditioner(blf, "bddc", coarsetype = "ngs_amg.stokes_gg_2d", **amg_opts)
+            # self.Apre = ngs.Preconditioner(blf, "bddc")
             blf.Assemble()
+            self.Apre.Test()
+            # quit()
 
         def SetUpDummy(self, stokes, **kwargs):
             self.Mpre = ngs.Projector(stokes.disc.Xext.FreeDofs(self.elint), True)
@@ -833,7 +883,7 @@ class StokesTemplate():
     def AssembleLinAlg(self):
         self.la.Assemble()
 
-    def Solve(self, tol = 1e-8, ms = 1000, solver = "minres"):
+    def Solve(self, tol = 1e-8, ms = 1000, rel_err = True, solver = "minres", presteps = 0):
 
         homogenize = len(self.settings.inlet)>0 and self.settings.uin is not None
 
@@ -854,9 +904,9 @@ class StokesTemplate():
             if not self.la.block_la:
                 raise Exception("For BPCG, use block-PC!")
             bp_cg = BPCGSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
-                               printrates = ngs.mpi_world.rank==0, rel_err=True)
-            if self.la.need_bp_scale:
-                bp_cg.ScaleAhat(tol=1e-10)#, scal = 1.0/1.35)
+                               printrates = ngs.mpi_world.rank==0, rel_err = rel_err)
+            # if self.la.need_bp_scale:
+                # bp_cg.ScaleAhat(tol=1e-10)#, scal = 1.0/1.35)
             sol_vec.data = bp_cg * rhs_vec
             nits = bp_cg.iterations
             self.solver = bp_cg
@@ -864,11 +914,19 @@ class StokesTemplate():
             # ngs.solvers.GMRes(A = self.la.M, b = rhs_vec, x = sol_vec, pre = self.la.Mpre,
             #                   tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
             # note: to compare, use rel_err=False
-            gmres = GMResSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
-                                printrates = ngs.mpi_world.rank==0, rel_err=True)
+            # A = ngs.BlockMatrix([ [ self.la.Apre, self.la.Apre @ self.la.BT @ self.la.Spre ],
+            #                       [ None, - self.la.Spre ] ])
+            # B = ngs.BlockMatrix([ [ ngs.IdentityMatrix(self.la.A.height), None ],
+            #                       [ -self.la.B @ self.la.Apre, ngs.IdentityMatrix(self.la.Spre.height) ] ])
+            # szpre = A @ B
+            szpre = SZPC(M = self.la.M, Ahat = self.la.Apre, Shat = self.la.Spre)
+            pc = szpre # self.la.Mpre
+            gmres = GMResSolver(M = self.la.M, Mhat = szpre, maxsteps=ms, tol=tol,
+                                printrates = ngs.mpi_world.rank==0, rel_err = rel_err, restart=50)
             sol_vec.data = gmres * rhs_vec
             nits = gmres.iterations
             self.solver = gmres
+            # print("used restarts = ", gmres.restarts)
         elif solver == "apply_pc":
             sol_vec.data = self.la.Mpre * rhs_vec
             nits = 1
@@ -878,9 +936,21 @@ class StokesTemplate():
                                # tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms)
             # nits = -1
             minres = MinResSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
-                                  printrates = ngs.mpi_world.rank==0, rel_err=True)
-            sol_vec.data = minres * rhs_vec
-            nits = minres.iterations
+                                  printrates = ngs.mpi_world.rank==0, rel_err = rel_err)
+            # pre-iterate 3 steps
+            if presteps > 0:
+                minres.maxsteps = presteps
+                minres.tol = 0
+                sol_vec[:] = 0
+                minres.Solve(sol = sol_vec, rhs = rhs_vec, initialize = False)
+                nits = minres.iterations
+                minres.maxsteps = ms
+                minres.tol = tol
+                minres.Solve(sol = sol_vec, rhs = rhs_vec, initialize = False)
+                nits = nits + minres.iterations
+            else:
+                sol_vec.data = minres * rhs_vec
+                nits = minres.iterations
             self.solver = minres
         else:
             raise Exception("Use bp, gmres or minres as Solver!")
