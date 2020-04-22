@@ -6,6 +6,56 @@ import netgen.csg as csg
 
 from FlowTemplates import FlowOptions
 
+
+def MatIter (amat, n_vecs = 5, lam_max = 1, lam_min = 0, reverse = True, M = 1e5, startvec = None, tol=1e-8, freedofs = None):
+    A = ngs.IdentityMatrix(amat.height) - 1/(lam_max-lam_min) * amat if reverse else amat
+    if freedofs is not None:
+        proj = ngs.Projector(freedofs, True)
+        A = proj @ A @ proj
+    evecs = list()
+    evals = list()
+    if startvec is None:
+        startvec = amat.CreateColVector()
+        startvec.Cumulate()
+        import random
+        for k in range(len(startvec)):
+            startvec[k] = random.randint(1,1000) / 1000
+        startvec.Distribute()
+        startvec.Cumulate()
+    startvec *= ngs.InnerProduct(startvec, startvec)**(-0.5)
+    # print('inin', ngs.Norm(startvec))
+    tempvec = startvec.CreateVector()
+    errvec = startvec.CreateVector()
+    def ortho(vec, base):
+        for k,bv in enumerate(base):
+            ip = ngs.InnerProduct(vec, bv)
+            vec -= ip * bv
+    for K in range(n_vecs):
+        for l in range(int(M)):
+            tempvec.data = A * startvec
+            ortho(tempvec, evecs)
+            ip = ngs.InnerProduct(tempvec, startvec)
+            errvec.data = tempvec - ip * startvec
+            # print('norms', ngs.Norm(startvec), ngs.Norm(tempvec), ngs.Norm(errvec))
+            startvec.data = 1/ngs.Norm(tempvec) * tempvec
+            err = ngs.Norm(errvec)
+            if err < tol * ip:
+                break
+        if reverse:
+            print('evec', K, 'after', l, 'its with err', err, 'and eval', ip, 'orig eval', (lam_max - lam_min) * ( 1 - ip))
+        else:
+            print('evec', K, 'after', l, 'its with err', err, 'and eval', ip)
+        vk = startvec.CreateVector()
+        vk.data = startvec
+        avk = amat.CreateColVector()
+        lamk = (lam_max - lam_min) * ( 1 - ip)
+        avk.data = amat * vk - lamk * vk
+        print("evec", K, ", actual eval = ", lamk, ", final error =", ngs.Norm(avk), ", rel final error = ", ngs.Norm(avk)/ngs.Norm(vk))
+        evecs.append(vk)
+        evals.append(ip)
+    return evecs, evals
+
+
 def gen_ref_mesh(geo, comm, maxh, nref = 0, mesh_file = "", load = False, save = False):
     if load:
         mesh = ngs.comp.Mesh(mesh_file, comm)
