@@ -36,7 +36,7 @@ def MatIter (amat, n_vecs = 5, lam_max = 1, lam_min = 0, reverse = True, M = 1e5
             ortho(tempvec, evecs)
             ip = ngs.InnerProduct(tempvec, startvec)
             errvec.data = tempvec - ip * startvec
-            # print('norms', ngs.Norm(startvec), ngs.Norm(tempvec), ngs.Norm(errvec))
+            # print('\rit = ', l, ', norms = ', ngs.Norm(startvec), ngs.Norm(tempvec), ngs.Norm(errvec))
             startvec.data = 1/ngs.Norm(tempvec) * tempvec
             err = ngs.Norm(errvec)
             if err < tol * ip:

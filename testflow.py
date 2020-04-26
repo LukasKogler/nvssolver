@@ -9,18 +9,25 @@ from FlowTemplates import StokesTemplate
 
 ngsglobals.msg_level = 1
 
-flow_settings = ST_2d(maxh=0.1, nu=1e-3)
-flow_settings.mesh.Curve(3)
-pqr = 0
 
-# flow_settings = channel2d(maxh=0.1, nu=1e-3, L=5)
+# flow_settings = channel2d(maxh=0.1, nu=1e-3, L=1)
 # pqr = 0
+
+# flow_settings = ST_2d(maxh=0.1, nu=1e-3)
+# flow_settings.mesh.Curve(3)
+# pqr = 0
+
+# flow_settings = channel2d(maxh=0.05, nu=1e-3, L=1, nref=1)
+# pqr = 0
+
+flow_settings = channel2d(maxh=0.2, nu=1e-3, L=40)
+pqr = 0
 
 # flow_settings = ST_3d(maxh=0.1, nu=1e-2)
 # flow_settings.mesh.Curve(3)
 # pqr = 0
 
-# flow_settings = vortex2d(maxh=0.2, nu=1)
+# flow_settings = vortex2d(maxh=0.025, nu=1)
 # pqr = 1e-6
 
 print("verts " , flow_settings.mesh.nv)
@@ -49,12 +56,12 @@ sol_opts = { "elint" : True,
                      "type" : "auxh1", 
                      # "amg_package" : "petsc",
                      "amg_package" : "ngs_amg",
-                     # "amg_package" : "direct", # direct solve in auxiliary space
+                     #"amg_package" : "direct", # direct solve in auxiliary space
                      "mlt_smoother" : True,
                      "el_blocks" : False,
                      # "type" : "stokesamg", 
                      "amg_opts" : {
-                         "ngs_amg_max_coarse_size" : 50,
+                         "ngs_amg_max_coarse_size" : 2,
                          # "ngs_amg_max_levels" : 2,
                          "ngs_amg_sm_type" : "gs",
                          "ngs_amg_keep_grid_maps" : True,
@@ -91,20 +98,44 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
 
     ts = Timer("solve")
     ts.Start()
-    nits = stokes.Solve(tol=1e-6, ms = 300, solver = "minres")
+    nits = stokes.Solve(tol=1e-12, ms = 500, solver = "gmres", use_sz = True, rel_err = False)
     ts.Stop()
 
     if mpi_world.rank == 0:
         print("\n---\ntime setup", tsup.time)
         print("nits = ", nits)
+        print("A dofs  ", stokes.disc.X.ndofglobal)
+        print("Q dofs  ", stokes.disc.Q.ndofglobal)
+        print("---")
+        print("A+Q dofs", stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal)
         print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (tsup.time * mpi_world.size) / 1000, "K" ) 
         print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (tsup.time * mpi_world.size) / 1000, "K" ) 
-    if mpi_world.rank == 0:
-        print("\n---\ntime solve", ts.time)
+        print("---\ntime solve", ts.time)
         print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (ts.time * mpi_world.size) / 1000, "K" ) 
         print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (ts.time * mpi_world.size) / 1000, "K" ) 
+        print("---\n")
 
-    
+
+    sys.stdout.flush()
+
+    sol_opts["elint"] = False
+    disc_opts["divdivpen"] = 0
+    sol_opts["pc_ver"] = "direct"
+    # sol_opts["elint"] = False
+    stokesex = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts)
+    stokesex.Solve(tol=1e-6, ms = 500, solver = "apply_pc")
+
+    err = GridFunction(stokes.disc.V)
+    err.vec.data = stokes.velocity.vec - stokesex.velocity.vec
+    norm_err = Norm(err.vec)
+    norm_errl2 = abs(Integrate((stokes.velocity - stokesex.velocity)**2, flow_settings.mesh))**0.5
+    print("norm err l2 = ", norm_err)
+    print("norm err L2 = ", norm_errl2)
+
+    import matplotlib.pyplot as plt
+    plt.semilogy(list(k for k,x in enumerate(stokes.solver.errors)), stokes.solver.errors)
+    plt.show()
+        
     Draw(stokes.velocity, stokes.settings.mesh, "velocity")
     # stokes.la.TestBlock()
 

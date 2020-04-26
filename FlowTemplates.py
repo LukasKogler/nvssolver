@@ -99,7 +99,12 @@ class SZPC(ngs.BaseMatrix):
         super(SZPC, self).__init__()
         self.M = M
         self.A, self.B, self.BT = M[0,0], M[1,0], M[0,1]
+        lams1 = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=Ahat, tol=1e-6))
+        # self.Ahat = 1.0/(1.01 * lams1[-1]) * Ahat
         self.Ahat = Ahat
+        S = self.B @ self.Ahat @ self.BT
+        lams2 = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=Shat, tol=1e-6))
+        # self.Shat = 1.0/(lams2[-1] * 1.01) * Shat
         self.Shat = Shat
         self.mBTSg2 = self.A.CreateColVector()
         self.g2 = self.Shat.CreateColVector()
@@ -263,6 +268,7 @@ class MCS:
             p,q = self.Q.TnT()
 
         nu = 2 * self.settings.nu if self.settings.sym else self.settings.nu
+        self.nueff = nu
         self.a_vol = -1 / nu * ngs.InnerProduct(sigma, tau) \
                      + ngs.div(sigma) * v \
                      + ngs.div(tau) * u
@@ -459,7 +465,8 @@ class StokesTemplate():
                                                store_inner = self.elint and not self.it_on_sc)
                     self.a2 += stokes.disc.stokesA()
                     self.a2 += stokes.disc.ddp * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
-                    self.a2 += 1e2/stokes.disc.h * stokes.settings.nu * ngs.InnerProduct(stokes.disc.normal(u), stokes.disc.normal(v)) * ngs.dx
+                    # what is thjis... this does not even make sense, it needs a surface-int
+                    # self.a2 += 1e2/stokes.disc.h * stokes.settings.nu * ngs.InnerProduct(stokes.disc.normal(u), stokes.disc.normal(v)) * ngs.dx
                 else:
                     self.a2 = self.a
                 # self.a2 += 1e-4 * stokes.settings.nu * stokes.disc.uv * ngs.dx
@@ -564,9 +571,9 @@ class StokesTemplate():
                 if stokes.disc.stokesC() is not None:
                     self.massp += -1 * stokes.disc.stokesC()
                 if stokes.disc.ddp == 0:
-                    self.massp +=  1/stokes.settings.nu * p * q * ngs.dx
+                    self.massp +=  1/stokes.disc.nueff * p * q * ngs.dx
                 else:
-                    self.massp +=  1/(stokes.settings.nu * stokes.disc.ddp) * p * q * ngs.dx
+                    self.massp +=  1/(stokes.disc.nueff * stokes.disc.ddp) * p * q * ngs.dx
                 # self.Spre = ngs.Preconditioner(self.massp, "direct")
                 self.Spre = ngs.Preconditioner(self.massp, "local")
 
@@ -628,6 +635,8 @@ class StokesTemplate():
 
             # Auxiliary space
             if True:
+                # V = ngs_amg.NoCoH1(stokes.settings.mesh, dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet, \
+                                   # dim = stokes.settings.mesh.dim)
                 V = ngs.H1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet, \
                            dim = stokes.settings.mesh.dim)
             else:
@@ -693,7 +702,7 @@ class StokesTemplate():
             
                 
             # Embeddig Auxiliary space -> MCS space
-            emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = True, parmat = False, bonus_intorder_ab = 2,
+            emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = False, parmat = False, bonus_intorder_ab = 2,
                                             range_dofs = stokes.disc.V.FreeDofs(self.elint))
             tc1 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(0)) # to-compound
             emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = True, parmat = False, bonus_intorder_ab = 2,
@@ -779,7 +788,7 @@ class StokesTemplate():
             # print("AUX MAT: ", self.Apre.aux_mat)
             ## END SetUpAFacet ##
 
-        def SetUpStokesAMG(self, stokes, amg_opts = dict(), **kwargs):
+        def SetUpStokesAMG(self, stokes, amg_opts = dict(), p1aux = False, **kwargs):
             if not _ngs_amg:
                 raise Exception("Stokes AMG only available with NgsAMG!")
             # self.Apre = ngs_amg.stokes_gg_2d(self.a, **amg_opts)
@@ -787,6 +796,15 @@ class StokesTemplate():
             blf = self.a2
             # self.Apre = ngs.Preconditioner(blf, "direct")
             self.Apre = ngs_amg.stokes_gg_2d(blf, **amg_opts)
+            self.bApre = self.Apre
+
+            if p1aux:
+                V = ngs_amg.NoCoH1(stokes.settings.mesh, dim=stokes.settings.mesh.dim)
+                emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = False, parmat = False, bonus_intorder_ab = 2,
+                                                range_dofs = stokes.disc.V.FreeDofs(self.elint))
+                emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = False, parmat = False, bonus_intorder_ab = 2,
+                                                range_dofs = stokes.disc.Vhat.FreeDofs(self.elint))
+                self.Apre.set_hacked_emb(emb1, emb2)
 
             # inlet_dofs = stokes.disc.X.GetDofs(stokes.settings.mesh.Boundaries(stokes.settings.inlet))
             # a2f = stokes.disc.X.FreeDofs() | inlet_dofs
@@ -883,7 +901,7 @@ class StokesTemplate():
     def AssembleLinAlg(self):
         self.la.Assemble()
 
-    def Solve(self, tol = 1e-8, ms = 1000, rel_err = True, solver = "minres", presteps = 0):
+    def Solve(self, tol = 1e-8, ms = 1000, rel_err = True, solver = "minres", presteps = 0, use_sz = False):
 
         homogenize = len(self.settings.inlet)>0 and self.settings.uin is not None
 
@@ -906,7 +924,7 @@ class StokesTemplate():
             bp_cg = BPCGSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
                                printrates = ngs.mpi_world.rank==0, rel_err = rel_err)
             # if self.la.need_bp_scale:
-                # bp_cg.ScaleAhat(tol=1e-10)#, scal = 1.0/1.35)
+            bp_cg.ScaleAhat(tol=1e-10)#, scal = 1.0/1.35)
             sol_vec.data = bp_cg * rhs_vec
             nits = bp_cg.iterations
             self.solver = bp_cg
@@ -919,10 +937,12 @@ class StokesTemplate():
             # B = ngs.BlockMatrix([ [ ngs.IdentityMatrix(self.la.A.height), None ],
             #                       [ -self.la.B @ self.la.Apre, ngs.IdentityMatrix(self.la.Spre.height) ] ])
             # szpre = A @ B
-            szpre = SZPC(M = self.la.M, Ahat = self.la.Apre, Shat = self.la.Spre)
-            pc = szpre # self.la.Mpre
-            gmres = GMResSolver(M = self.la.M, Mhat = szpre, maxsteps=ms, tol=tol,
-                                printrates = ngs.mpi_world.rank==0, rel_err = rel_err, restart=50)
+            if use_sz:
+                pc = SZPC(M = self.la.M, Ahat = self.la.Apre, Shat = self.la.Spre)
+            else:
+                pc = self.la.Mpre
+            gmres = GMResSolver(M = self.la.M, Mhat = pc, maxsteps=ms, tol=tol,
+                                printrates = ngs.mpi_world.rank==0, rel_err = rel_err)#, restart=200)
             sol_vec.data = gmres * rhs_vec
             nits = gmres.iterations
             self.solver = gmres
@@ -937,7 +957,7 @@ class StokesTemplate():
             # nits = -1
             minres = MinResSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
                                   printrates = ngs.mpi_world.rank==0, rel_err = rel_err)
-            # pre-iterate 3 steps
+            # pre-iterate
             if presteps > 0:
                 minres.maxsteps = presteps
                 minres.tol = 0

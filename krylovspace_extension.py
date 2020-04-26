@@ -81,8 +81,8 @@ class BPCGSolver(IterativeSolver):
     def CalcScaleFactor(self, A, Ahat, tol=1e-10):
         self.timer_prepev.Start()
         lams = list(ngs.la.EigenValues_Preconditioner(mat=A, pre=Ahat, tol=tol))
-        # scal = 1.0 / (lams[0] * 0.95)
-        scal = 1.0 / (lams[-1] * 1.05)
+        scal = 1.0 / (lams[0] * 0.95)
+        # scal = 1.0 / (lams[-1] * 1.05)
         if ngs.mpi_world.rank == 0:
             print("###############################")
             print("scale = ", scal)
