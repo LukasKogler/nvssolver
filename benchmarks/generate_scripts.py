@@ -1,7 +1,6 @@
 import sys, os, subprocess, shutil
 
 
-
 def gen_pyfile(ofile, tfile, **params):
     tf = open(tfile, 'r')
     pyf = open(ofile, 'w')
@@ -17,20 +16,23 @@ def gen_pyfile(ofile, tfile, **params):
     pyf.close()
 
     
-def gen_sfile(sfile, pyfile, wdir, nnodes = 1, ntasks = 1, cpt = 1, npc = 1, nps = 8, spn = 2, NN=1, NP=1, job_name='default',
-              ofile = None, use_numactl = True):
+def gen_sfile(sfile, pyfile, wdir, nnodes = 1, ntasks = 1, cpt = 1, npc = 1, nps = 8, spn = 2, tpn = 16, NN=1, NP=1, job_name='default',
+              ofile = None, use_numactl = True, tpc = 1):
     f = open(sfile, 'w')
     f.write("#!/usr/bin/bash\n")
-    f.write("#SBATCH -N 4\n")
-    f.write("#SBATCH --ntasks-per-node=16\n")
-    f.write("#SBATCH --sockets-per-node=2\n")
-    f.write("#SBATCH --ntasks-per-socket=8\n")
-    f.write("#SBATCH --ntasks-per-core=1\n")
-    f.write("#SBATCH --cpus-per-task=1\n")
-    f.write("#SBATCH --threads-per-core=2\n")
-    f.write("#SBATCH --mem-bind=local\n")
+    wopt = lambda key, val : f.write("#SBATCH --" + key + "=" + str(val) + "\n")
+    wopt("ntasks", ntasks)
+    f.write("#SBATCH -N " + str(nnodes) + "\n")
+    wopt("job-name", job_name)
+    wopt("ntasks-per-node", tpn)
+    wopt("sockets-per-node", spn)
+    wopt("ntasks-per-socket", nps)
+    wopt("ntasks-per-core", npc)
+    wopt("cpus-per-task", cpt)
+    wopt("threads-per-core", tpc)
+    wopt("mem-bind", "local")
     if ofile is not None:
-        f.write("#SBATCH --output=" + ofile + "\n")
+        wopt("output", ofile)
     f.write("\n\n\n")
     f.write('cd ' + wdir + '\n\n')
     launch_cmd = "prun "
@@ -45,42 +47,69 @@ def gen_sfile(sfile, pyfile, wdir, nnodes = 1, ntasks = 1, cpt = 1, npc = 1, nps
 sfiles = []
 
 #
-base_dir = "/home/lkogler/tests/stokes_solver/bench1/run0/"
+base_dir = "/home/lkogler/tests/stokes_solver/bench3/run1/"
 os.makedirs(base_dir, exist_ok=True)
 
 # Copy these files to every job folder
 nvsdir = "/home/lkogler/src/nvssolver/"
-dep_files = [nvsdir + "utils.py", nvsdir + "FlowTemplates.py", nvsdir + "bramblepasciak.py"]
+dep_files = [nvsdir + "utils.py", nvsdir + "FlowTemplates.py", nvsdir + "krylovspace_extension.py"]
 
 # This line is dumped after parameters - change the problem here
-fsc = "flow_settings = ST_2d(maxh=maxh, nref = nref)\\nflow_settings.mesh.Curve(3)"
+# fsc = "flow_settings = ST_3d(maxh=maxh, nref = nref)\\nflow_settings.mesh.Curve(3)"
+fscT = "flow_settings = ST_3d(maxh=maxh, nref = nref)\\nflow_settings.mesh.Curve(3)"
+fscF = "flow_settings = ST_3d(maxh=maxh, nref = nref, obstacle = False)"
 
-# (ncpus, maxh, nref)
-job_descriptions = [(1, 0.1, 0), (8, 0.05, 0), (64, 0.025, 0)]
+## ST_3d mesh : maxh/nref/Kfacets for generated meshes ... 
+# hrfs = [(0.05,  0, 55),   (0.05,  1, 434), 
+#         (0.04,  0, 76),   (0.04,  1, 596), 
+#         (0.035, 0, 74),   (0.035, 1, 740), 
+#         (0.03,  0, 221),  (0.03,  1, 1750), 
+#         (0.025, 0, 371),  (0.025, 1, 2900), 
+#         (0.02,  0, 514),  (0.02,  1, 4000), 
+#         (0.015, 0, 1600), (0.015, 1, 128000), 
+#         (0.01,  0, 4008), (0.01,  1, 32064)] # <- this one is guessed 
+# hrnps = []
+# for h, r, nf in hrfs:
+#     nps = int(round(nf/62.5))
+#     rfrac = nf/63.5
+#     if nps >= 1 and nps <=64:
+#         print((h, r, int(nps)))
+#         hrnps.append( (h, r, nps, rfrac) )
+# hrnps.sort(key = lambda x : x[2])
+# for x in hrnps:
+#     print(x)
+# quit()
+
+# (maxh, nref, ntasks)
+job_descriptions = [(0.04, 0, 1), (0.025, 0, 7), (0.02, 0, 9), (0.04, 1, 10), (0.035, 1, 13), (0.015, 0, 27), (0.03, 1, 29), (0.025, 1, 47), (0.02, 1, 64)]
 
 job_cnt = 0
-for nt, maxh, nref in job_descriptions:
-    for bp in [True, False]:
-        jobdir = base_dir + "job" + str(job_cnt) + "/"
-        os.makedirs(jobdir, exist_ok=True)
+for obstacle, fsc in [(True, fscT)]:#, (False, fscF)]:
+    for solver in ["gmres"]:
+        jc2 = 0
+        for maxh, nref, nt in job_descriptions:
+            obsn = "T" if obstacle else "F"
+            jobdir = base_dir + "ST3D_" + obsn + "_" + solver + "/job" + str(jc2) + "/"
+            os.makedirs(jobdir, exist_ok=True)
 
-        sfile    = jobdir + "job.slurm"
-        pyfile   = jobdir + "run.py"
-        pickfile = jobdir + "results.pickle"
-        outfile  = jobdir + "run.out"
+            sfile    = jobdir + "job.slurm"
+            pyfile   = jobdir + "run.py"
+            pickfile = jobdir + "results.pickle"
+            outfile  = jobdir + "run.out"
 
-        for f in dep_files:
-            shutil.copyfile(f, jobdir + os.path.basename(f))
+            for f in dep_files:
+                shutil.copyfile(f, jobdir + os.path.basename(f))
 
-        gen_pyfile(ofile = pyfile, tfile = "template.py", pickle_file = pickfile, fs_cmd = fsc, maxh = maxh, nref = nref)
+            gen_pyfile(ofile = pyfile, tfile = "template.py", pickle_file = pickfile, fs_cmd = fsc, maxh = maxh, nref = nref, solver = solver)
 
-        nnodes = nt//16 + (0 if nt%16 == 0 else 1)
-        if nnodes < 1 or nnodes > 4:
-            raise Exception("invalid nnodes = " + str(nnodes))
+            nnodes = nt//16 + (0 if nt%16 == 0 else 1)
+            if nnodes < 1 or nnodes > 4:
+                raise Exception("invalid nnodes = " + str(nnodes))
 
-        gen_sfile(job_name = "ST3D_" + str(job_cnt), sfile = sfile, ofile = outfile, pyfile = pyfile, wdir = jobdir, nnodes = nnodes, ntasks = nt)
-        sfiles.append(sfile)
-        job_cnt += 1
+            gen_sfile(job_name = "ST3D_" + str(job_cnt), sfile = sfile, ofile = outfile, pyfile = pyfile, wdir = jobdir, nnodes = nnodes, ntasks = nt)
+            sfiles.append(sfile)
+            job_cnt += 1
+            jc2 += 1
 
 
 sub = input("Submit?")
