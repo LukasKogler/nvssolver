@@ -136,8 +136,8 @@ register(ST_3d, "ST_3d")
 ## [0, L] \times [0, 1]
 ## inflow left, outflow right, wall top/bottom
 ##
-def channel2d(maxh, L=1, nref=0, save=False, load=False, nu=1, symmetric=False):
-    geo = geo_2dchannel(H=1, L=L, obstacle=False)
+def channel2d(maxh, H=1, L=1, nref=0, save=False, load=False, nu=1, symmetric=False):
+    geo = geo_2dchannel(H=H, L=L, obstacle=False)
     mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
     uin = ngs.CoefficientFunction( (4 * ngs.y * (1-ngs.y), 0) )
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "left", outlet = "right", wall_slip = "",
