@@ -315,6 +315,7 @@ class GMResSolver(IterativeSolver):
                 return
 
         self.iterations = -int(abs(self.iterations))
+        self.calcSolution(m-1, H, Q, beta, sol)
         if ngs.mpi_world.rank==0:
             print("Warning: GMRes did not converge to TOL")
 

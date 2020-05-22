@@ -99,11 +99,11 @@ class SZPC(ngs.BaseMatrix):
         super(SZPC, self).__init__()
         self.M = M
         self.A, self.B, self.BT = M[0,0], M[1,0], M[0,1]
-        lams1 = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=Ahat, tol=1e-6))
+        # lams1 = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=Ahat, tol=1e-6))
         # self.Ahat = 1.0/(1.01 * lams1[-1]) * Ahat
         self.Ahat = Ahat
-        S = self.B @ self.Ahat @ self.BT
-        lams2 = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=Shat, tol=1e-6))
+        # S = self.B @ self.Ahat @ self.BT
+        # lams2 = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=Shat, tol=1e-6))
         # self.Shat = 1.0/(lams2[-1] * 1.01) * Shat
         self.Shat = Shat
         self.mBTSg2 = self.A.CreateColVector()
@@ -133,7 +133,46 @@ class SZPC(ngs.BaseMatrix):
         x.data += scal * self.xtemp
     def MultTransAdd(self, scal, b, x):
         self.MultAdd(scal, b, x)
-        
+                
+class PSZPC(ngs.BaseMatrix):
+    def __init__(self, M, Ahat, Shat):
+        super(PSZPC, self).__init__()
+        self.M = M
+        self.A, self.B, self.BT = M[0,0], M[1,0], M[0,1]
+        # lams1 = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=Ahat, tol=1e-6))
+        # self.Ahat = 1.0/(1.01 * lams1[-1]) * Ahat
+        self.Ahat = Ahat
+        # S = self.B @ self.Ahat @ self.BT
+        # lams2 = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=Shat, tol=1e-6))
+        # self.Shat = 1.0/(lams2[0] * 1.01) * Shat
+        self.Shat = Shat
+        self.mBTSg2 = self.A.CreateColVector()
+        self.g2 = self.Shat.CreateColVector()
+        self.xtemp = self.M.CreateColVector()
+    def IsComplex(self):
+        return False
+    def Height(self):
+        return self.M.height
+    def Width(self):
+        return self.M.width
+    def CreateColVector(self):
+        return self.M.CreateColVector()
+    def CreateRowVector(self):
+        return self.M.CreateRowVector()
+    def Mult(self, b, x):
+        # A = ngs.BlockMatrix([ [ self.la.Apre, self.la.Apre @ self.la.BT @ self.la.Spre ],
+                              # [ None, - self.la.Spre ] ])
+        f, g = b[0], b[1]
+        x[1].data = - self.Shat * g
+        self.mBTSg2.data = f - self.BT * x[1]
+        x[0].data = self.Ahat * self.mBTSg2.data
+    def MultTrans(self, b, x):
+        self.Mult(b, x)
+    def MultAdd(self, scal, b, x):
+        self.Mult(b, self.xtemp)
+        x.data += scal * self.xtemp
+    def MultTransAdd(self, scal, b, x):
+        self.MultAdd(scal, b, x)
 ### END Misc Utilities ###
 
 
@@ -573,7 +612,7 @@ class StokesTemplate():
                 if stokes.disc.ddp == 0:
                     self.massp +=  1/stokes.disc.nueff * p * q * ngs.dx
                 else:
-                    self.massp +=  1/(stokes.disc.nueff * stokes.disc.ddp) * p * q * ngs.dx
+                    self.massp +=  1/(stokes.disc.nueff * (1 + stokes.disc.ddp)) * p * q * ngs.dx
                 # self.Spre = ngs.Preconditioner(self.massp, "direct")
                 self.Spre = ngs.Preconditioner(self.massp, "local")
 
@@ -606,6 +645,13 @@ class StokesTemplate():
                
                 self.Mpre = ngs.BlockMatrix( [ [self.Apre, None],
                                                [None, self.Spre] ] )
+
+                # lams = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=self.Apre, tol=1e-6))
+                # self.Apre = 1.0/(lams2[1] * 1.1) * self.Apre
+
+                # S = self.B @ self.Apre @ self.BT
+                # lams2 = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-6))
+                # self.Spre = 1.0/(lams2[0] * 0.9) * self.Spre
 
         def SetUpADirect(self, stokes, inv_type = None, **kwargs):
             if inv_type is None:
@@ -816,6 +862,11 @@ class StokesTemplate():
             self.Apre.Test()
             # quit()
 
+            # Apr = self.Apre
+            # self.Apre = ngs.krylovspace.CGSolver(mat=blf.mat, pre=self.Apre, tol=1e-6, maxsteps=50, printing=False)
+            # self.Apre.CreateColVector = lambda : Apr.CreateColVector()
+            # # self.Apre = 0.85 * self.Apre
+
         def SetUpDummy(self, stokes, **kwargs):
             self.Mpre = ngs.Projector(stokes.disc.Xext.FreeDofs(self.elint), True)
                 
@@ -942,13 +993,41 @@ class StokesTemplate():
             else:
                 pc = self.la.Mpre
             gmres = GMResSolver(M = self.la.M, Mhat = pc, maxsteps=ms, tol=tol,
-                                printrates = ngs.mpi_world.rank==0, rel_err = rel_err)#, restart=200)
-            sol_vec.data = gmres * rhs_vec
-            nits = gmres.iterations
+                                printrates = ngs.mpi_world.rank==0, rel_err = rel_err, restart=500)
+            # opts = {"ksp_type":"cg", "ksp_atol":1e-30, "ksp_rtol":1e-8,
+            #         #"pc_view" : "",
+            #         #"ksp_view" : "",
+            #         "ksp_monitor" : "",
+            #         "pc_type" : "gamg"}
+            # pcM = petsc.FlatPETScMatrix(self.la.M)
+            # pcpc = petsc.NGs2PETScPrecond(mat=self.la.M, pc=pc)
+            # gmres = petsc.ksp(pcM, finalize=False, name="mygmres",
+            #                   petsc_options = { "ksp_monitor" : "", "ksp_type" : "gmres", "ksp_rtol" : tol })
+            # gmres.SetPC(pcpc)
+            # gmres.Finalize()
+            # sol_vec.data = gmres * rhs_vec
+            # nits = gmres.iterations
+            if presteps > 0:
+                gmres.maxsteps = presteps
+                gmres.tol = 0
+                sol_vec[:] = 0
+                gmres.Solve(sol = sol_vec, rhs = rhs_vec, initialize = False)
+                nits = gmres.iterations
+                gmres.maxsteps = ms
+                gmres.tol = tol
+                gmres.Solve(sol = sol_vec, rhs = rhs_vec, initialize = False)
+                nits = nits + gmres.iterations
+            else:
+                sol_vec.data = gmres * rhs_vec
+                nits = gmres.iterations
             self.solver = gmres
             # print("used restarts = ", gmres.restarts)
         elif solver == "apply_pc":
-            sol_vec.data = self.la.Mpre * rhs_vec
+            if use_sz:
+                pc = SZPC(M = self.la.M, Ahat = self.la.Apre, Shat = self.la.Spre)
+            else:
+                pc = self.la.Mpre
+            sol_vec.data = pc * rhs_vec
             nits = 1
         elif solver == "minres":
             # note: to compare, use rel_err=False
