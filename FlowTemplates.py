@@ -86,6 +86,9 @@ class SPCST (ngs.BaseMatrix):
             self.S.Smooth(x, b)
             self.res.data = b - self.A * x
 
+        # self.xtemp.data = self.emb_pc * self.res
+        # x.data += self.xtemp
+
         self.emb_pc.MultAdd(1.0, self.res, x)
         
         if self.swr: # Backward smoothing - no need to update residual
@@ -226,7 +229,7 @@ class MCS:
         self.V = ngs.HDiv(settings.mesh, order = self.order, RT = self.RT, hodivfree = self.hodivfree, \
                           dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.wall_slip)
         if self.RT:
-            if False: # "correct" version
+            if True: # "correct" version
                 self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, \
                                                        dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
             else: # not "correct", but works with facet-aux
@@ -237,7 +240,7 @@ class MCS:
             self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order)
             raise Exception("AAA")
         else:
-            if False: # "correct" version
+            if True: # "correct" version
                 # self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
                                                        # dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
                 self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
@@ -306,7 +309,7 @@ class MCS:
                 v, vhat, tau = self.X.TestFunction()
             p,q = self.Q.TnT()
 
-        nu = 2 * self.settings.nu if self.settings.sym else self.settings.nu
+        nu = (2 * self.settings.nu) if self.settings.sym else self.settings.nu
         self.nueff = nu
         self.a_vol = -1 / nu * ngs.InnerProduct(sigma, tau) \
                      + ngs.div(sigma) * v \
@@ -748,7 +751,7 @@ class StokesTemplate():
             
                 
             # Embeddig Auxiliary space -> MCS space
-            emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = False, parmat = False, bonus_intorder_ab = 2,
+            emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = True, parmat = False, bonus_intorder_ab = 2,
                                             range_dofs = stokes.disc.V.FreeDofs(self.elint))
             tc1 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(0)) # to-compound
             emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = True, parmat = False, bonus_intorder_ab = 2,
@@ -791,11 +794,12 @@ class StokesTemplate():
                             sm_blocks.append(block)
 
             # The entire PC
+            # aux_pre = ngs.CGSolver(mat=a_aux.mat, pre=aux_pre, printrates=False, precision=1e-6)
             if mlt_smoother:
                 if _ngs_amg:
                     bsmoother = ngs_amg.CreateHybridBlockGSS(mat = self.a.mat, blocks = sm_blocks, shm = ngs.mpi_world.size == 1)
                     self.Apre = SPCST(smoother = bsmoother, mat = self.a.mat, pc = aux_pre, emb = embA, swr = True)
-                elif mpi_world.size == 1:
+                elif ngs.mpi_world.size == 1:
                     bsmoother = self.a.mat.local_mat.CreateBlockSmoother(sm_blocks)
                     self.Apre = SPCST(smoother = bsmoother, mat = self.a.mat, pc = aux_pre, emb = embA, swr = False)
                 else:
@@ -804,6 +808,8 @@ class StokesTemplate():
                 bsmoother = self.a.mat.local_mat.CreateBlockSmoother(blocks = sm_blocks, parallel=True)
                 self.Apre = bsmoother + embA @ aux_pre @ embA.T
 
+            # self.Apre = ngs.CGSolver(mat=self.a.mat, pre=self.Apre, printrates=False, precision=1e-2)
+                
             # v1 = self.Apre.CreateColVector()
             # v2 = aux_pre.CreateColVector()
             # print("vec lens", len(v1), len(v2))
@@ -952,8 +958,10 @@ class StokesTemplate():
     def AssembleLinAlg(self):
         self.la.Assemble()
 
-    def Solve(self, tol = 1e-8, ms = 1000, rel_err = True, solver = "minres", presteps = 0, use_sz = False):
+    def Solve(self, tol = 1e-8, ms = 1000, rel_err = True, solver = "minres", presteps = 0, use_sz = False, printrates = None):
 
+        pr = ngs.mpi_world.rank==0 if printrates is None else printrates
+        
         homogenize = len(self.settings.inlet)>0 and self.settings.uin is not None
 
         rhs_vec = self.la.rhs_vec.CreateVector()
@@ -973,7 +981,7 @@ class StokesTemplate():
             if not self.la.block_la:
                 raise Exception("For BPCG, use block-PC!")
             bp_cg = BPCGSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
-                               printrates = ngs.mpi_world.rank==0, rel_err = rel_err)
+                               printrates = pr, rel_err = rel_err)
             # if self.la.need_bp_scale:
             bp_cg.ScaleAhat(tol=1e-10)#, scal = 1.0/1.35)
             sol_vec.data = bp_cg * rhs_vec
@@ -993,7 +1001,7 @@ class StokesTemplate():
             else:
                 pc = self.la.Mpre
             gmres = GMResSolver(M = self.la.M, Mhat = pc, maxsteps=ms, tol=tol,
-                                printrates = ngs.mpi_world.rank==0, rel_err = rel_err, restart=500)
+                                printrates = pr, rel_err = rel_err, restart=500)
             # opts = {"ksp_type":"cg", "ksp_atol":1e-30, "ksp_rtol":1e-8,
             #         #"pc_view" : "",
             #         #"ksp_view" : "",
@@ -1035,7 +1043,7 @@ class StokesTemplate():
                                # tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms)
             # nits = -1
             minres = MinResSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
-                                  printrates = ngs.mpi_world.rank==0, rel_err = rel_err)
+                                  printrates = pr, rel_err = rel_err)
             # pre-iterate
             if presteps > 0:
                 minres.maxsteps = presteps
