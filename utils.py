@@ -57,21 +57,25 @@ def MatIter (amat, n_vecs = 5, lam_max = 1, lam_min = 0, reverse = True, M = 1e5
 
 
 def gen_ref_mesh(geo, comm, maxh, nref = 0, mesh_file = "", load = False, save = False):
-    if load:
-        mesh = ngs.comp.Mesh(mesh_file, comm)
-    else:
-        if comm.rank == 0:
+    msl = ngs.ngsglobals.msg_level
+    ngs.ngsglobals.msg_level = 0
+    if comm.rank == 0:
+        if load:
+            ngmesh = ngm.Mesh()
+            ngmesh.Load(mesh_file)
+        else:
             ngmesh = geo.GenerateMesh(maxh=maxh)
             if save:
                 ngmesh.Save(mesh_file)
-            if comm.size > 1:
-                ngmesh.Distribute(comm)
-        else:
-            ngmesh = ngm.Mesh.Receive(comm)
-            ngmesh.SetGeometry(geo)
-        for l in range(nref):
-            ngmesh.Refine()
-        mesh = ngs.comp.Mesh(ngmesh)
+        if comm.size > 1:
+            ngmesh.Distribute(comm)
+    else:
+        ngmesh = ngm.Mesh.Receive(comm)
+        ngmesh.SetGeometry(geo)
+    for l in range(nref):
+        ngmesh.Refine()
+    mesh = ngs.comp.Mesh(ngmesh)
+    ngs.ngsglobals.msg_level = msl
     return mesh
 
 __case_setups = dict()
@@ -106,10 +110,10 @@ def geo_3dchannel(H, L, W, obstacle=True):
 ##
 ## 2D Schaefer Turek benchmark
 ##
-def ST_2d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False, obstacle=True):
+def ST_2d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False, obstacle=True, mesh_file=None):
     H, L = 0.41, 2.2
     geo = geo_2dchannel(H=H, L=L, obstacle=obstacle)
-    mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
+    mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load, mesh_file=mesh_file)
     uin = ngs.CoefficientFunction( (1.5 * (2/H)**2 * ngs.y * (H - ngs.y), 0))
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "left", outlet = "right", wall_slip = "",
                                 wall_noslip = "bottom|top|obstacle", uin = uin, symmetric = symmetric, vol_force = None)
@@ -120,10 +124,10 @@ register(ST_2d, "ST_2d")
 ##
 ## 2D Schaefer Turek benchmark
 ##
-def ST_3d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False, obstacle=True):
+def ST_3d(maxh, nref=0, save=False, load=False, nu=1, symmetric=False, obstacle=True, mesh_file=None):
     H, W, L = 0.41, 0.41, 2.5
     geo = geo_3dchannel(H=H, W=W, L=L, obstacle=obstacle)
-    mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load)
+    mesh = gen_ref_mesh(geo, ngs.mpi_world, maxh=maxh, nref=nref, save=save, load=load, mesh_file=mesh_file)
     uin = ngs.CoefficientFunction( (2.25 * (2/H)**2 * (2/W)**2 * ngs.y * (H - ngs.y) * ngs.z * (W - ngs.z), 0, 0))
     flow_settings = FlowOptions(geom = geo, mesh = mesh, nu = nu, inlet = "left", outlet = "right", wall_slip = "",
                                 wall_noslip = "wall|obstacle", uin = uin, symmetric = symmetric, vol_force = None)
