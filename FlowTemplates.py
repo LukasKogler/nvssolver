@@ -87,6 +87,7 @@ class SPCST (ngs.BaseMatrix):
             self.res.data = b - self.A * x
 
         # self.xtemp.data = self.emb_pc * self.res
+        # x.data += 1/1.4*self.xtemp
         # x.data += self.xtemp
 
         self.emb_pc.MultAdd(1.0, self.res, x)
@@ -715,9 +716,9 @@ class StokesTemplate():
             if stokes.settings.l2_coef is not None:
                 a_aux += stokes.settings.l2_coef * ngs.InnerProduct(u, v) * ngs.dx
             if len(stokes.settings.outlet) > 0:
-                a_aux += 1.0/stokes.disc.h * ngs.InnerProduct(stokes.disc.tang(u), stokes.disc.tang(v)) * ngs.ds(definedon=stokes.settings.mesh.Boundaries(stokes.settings.outlet))
+                a_aux += 10*stokes.settings.nu/stokes.disc.h * ngs.InnerProduct(stokes.disc.tang(u), stokes.disc.tang(v)) * ngs.ds(definedon=stokes.settings.mesh.Boundaries(stokes.settings.outlet))
             if len(stokes.settings.wall_slip) > 0:
-                a_aux += 1.0/stokes.disc.h * ngs.InnerProduct(stokes.disc.normal(u), stokes.disc.normal(v)) * ngs.ds(definedon=stokes.settings.mesh.Boundaries(stokes.settings.wall_slip))
+                a_aux += 10*stokes.settings.nu/stokes.disc.h * ngs.InnerProduct(stokes.disc.normal(u), stokes.disc.normal(v)) * ngs.ds(definedon=stokes.settings.mesh.Boundaries(stokes.settings.wall_slip))
 
                 
             ## nodalp2 experiment
@@ -742,6 +743,7 @@ class StokesTemplate():
                 a_aux.Assemble()
                 aux_pre = a_aux.mat.Inverse(V.FreeDofs(), inverse="mumps" if ngs.mpi_world.size>1 else "sparsecholesky")
 
+            # aux_pre = ngs.la.LoggingMatrix(aux_pre, "aux_pre")
             # print("aux free ", sum(V.FreeDofs()), len(V.FreeDofs()))
             # evs_Aa = list(ngs.la.EigenValues_Preconditioner(mat=a_aux.mat, pre=aux_pre, tol=1e-10))
             # # evs_Aa = list(ngs.la.EigenValues_Preconditioner(mat=a_aux.mat, pre=ngs.Projector(V.FreeDofs(), True), tol=1e-10))
@@ -756,21 +758,24 @@ class StokesTemplate():
             # Embeddig Auxiliary space -> MCS space
             emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = True, parmat = False, bonus_intorder_ab = 2,
                                             range_dofs = stokes.disc.V.FreeDofs(self.elint))
-            tc1 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(0)) # to-compound
+            tc1 = stokes.disc.X.Embedding(0).local_mat
+            # tc1 = ngs.la.LoggingMatrix(tc1, "tc1")
+            # tc1 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(0)) # to-compound
             emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = True, parmat = False, bonus_intorder_ab = 2,
                                             range_dofs = stokes.disc.Vhat.FreeDofs(self.elint))
-            tc2 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(1)) # to-compound
-            embA = (tc1 @ emb1) + (tc2 @ emb2)
-            embA0 = embA
+            # tc2 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(1)) # to-compound
+            tc2 = stokes.disc.X.Embedding(1).local_mat
+            # tc2 = ngs.la.LoggingMatrix(tc2, "tc2")
+            embA = tc1 @ emb1 + tc2 @ emb2
+            # embA = ngs.la.LoggingMatrix(embA, "loc embA")
             # embA = ngs.Projector(stokes.disc.X.FreeDofs(self.elint), True) @ embA
             # print("embA 1 dims ", embA.height, embA.width)
             if ngs.mpi_world.size > 1:
                 embA = ngs.ParallelMatrix(embA, row_pardofs = V.ParallelDofs(), col_pardofs = stokes.disc.X.ParallelDofs(),
                                           op = ngs.ParallelMatrix.C2C)
-            # else:
-                # embA = CVADD(embA, embA0)
-
-            # print("embA 2 dims ", embA.height, embA.width)
+            
+            # embA = ngs.la.LoggingMatrix(embA, "par embA")
+                # print("embA 2 dims ", embA.height, embA.width)
                 
             # Block-Smoother to combine with auxiliary PC    
             if mlt_smoother and V.mesh.comm.size>1 and not _ngs_amg:
@@ -809,20 +814,12 @@ class StokesTemplate():
                     raise Exception("Parallel Multiplicative block-smoothers only available with NgsAMG!")
             else:
                 bsmoother = self.a.mat.local_mat.CreateBlockSmoother(blocks = sm_blocks, parallel=True)
-                self.Apre = bsmoother + embA @ aux_pre @ embA.T
+                if ngs.mpi_world.size > 1:
+                    # bsmoother = ngs.ParallelMatrix(bsmoother, self.a.mat.row_pardofs, self.a.mat.col_pardofs, ngs.ParallelMatrix.D2D)
+                    # raise Exception("I think this does not work (anymore??)")
+                    pass
+                self.Apre = embA @ aux_pre @ embA.T + bsmoother 
 
-            # self.Apre = ngs.CGSolver(mat=self.a.mat, pre=self.Apre, printrates=False, precision=1e-2)
-                
-            # v1 = self.Apre.CreateColVector()
-            # v2 = aux_pre.CreateColVector()
-            # print("vec lens", len(v1), len(v2))
-            # print("embA dims", embA.height, embA.width)
-            # v3 = aux_pre.CreateColVector()
-            # v4 = aux_pre.CreateRowVector()
-            # print("2vec lens", len(v3), len(v4))
-            # v3 = aux_pre.local_mat.CreateColVector()
-            # v4 = aux_pre.local_mat.CreateRowVector()
-            # print("2vec lens", len(v3), len(v4))
             
             ## END SetUpAAux ##
             
