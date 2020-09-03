@@ -455,7 +455,8 @@ class StokesTemplate():
                 ## except when we are also using hodivfree
                 self.A = self.a.mat
                 if self.elint and not self.it_on_sc:
-                    Ahex, Ahext, Aii  = self.a.harmonic_extension, self.a.harmonic_extension_trans, self.a.inner_matrix
+                    Ahex, Ahext, Aii  = self.a.harmonic_extension.local_mat, self.a.harmonic_extension_trans.local_mat, \
+                                        self.a.inner_matrix.local_mat
                     Id = ngs.IdentityMatrix(self.A.height)
                     self.A = (Id - Ahext) @ (self.A.local_mat + Aii) @ (Id - Ahex)
                     if self.a.space.mesh.comm.size > 1:
@@ -478,7 +479,8 @@ class StokesTemplate():
             else:
                 self.M = self.m.mat
                 if self.elint and not self.it_on_sc:
-                    Mhex, Mhext, Mii  = self.m.harmonic_extension, self.m.harmonic_extension_trans, self.m.inner_matrix
+                    Mhex, Mhext, Mii  = self.m.harmonic_extension.local_mat, self.m.harmonic_extension_trans.local_mat, \
+                                        self.m.inner_matrix.local_mat
                     Id = ngs.IdentityMatrix(self.M.height)
                     self.M = (Id - Mhext) @ (self.M.local_mat + Mii) @ (Id - Mhex)
                     if self.m.space.mesh.comm.size > 1:
@@ -572,7 +574,7 @@ class StokesTemplate():
             if self.it_on_sc:
                 rv = rhs_vec[0] if self.block_la else rhs_vec
                 rv.Distribute()
-                rv.local_vec.data += self.a.harmonic_extension_trans * rv.local_vec
+                rv.local_vec.data += self.a.harmonic_extension_trans.local_mat * rv.local_vec
 
         def ExtendSol(self, sol_vec, rhs_vec):
             if self.it_on_sc:
@@ -580,8 +582,8 @@ class StokesTemplate():
                 rv = rhs_vec[0] if self.block_la else rhs_vec
                 rv.Distribute()
                 sv.Cumulate()
-                sv.local_vec.data += self.a.inner_solve * rv.local_vec
-                sv.local_vec.data += self.a.harmonic_extension * sv.local_vec
+                sv.local_vec.data += self.a.inner_solve.local_mat * rv.local_vec
+                sv.local_vec.data += self.a.harmonic_extension.local_mat * sv.local_vec
 
         def SetUpDirect(self, stokes, inv_type = None, **kwargs):
             # Direct inverse
@@ -591,7 +593,8 @@ class StokesTemplate():
                 itype = "umfpack" if inv_type is None else inv_type
                 self.Mpre = self.m.mat.Inverse(stokes.disc.Xext.FreeDofs(self.elint), inverse = itype)
                 if self.elint and not self.it_on_sc:
-                    Mhex, Mhext, Miii  = self.m.harmonic_extension, self.m.harmonic_extension_trans, self.m.inner_solve
+                    Mhex, Mhext, Miii  = self.m.harmonic_extension.local_mat, self.m.harmonic_extension_trans.local_mat, \
+                                         self.m.inner_solve
                     Id = ngs.IdentityMatrix(self.M.height)
                     if self.m.space.mesh.comm.size == 1:
                         self.Mpre = ((Id + Mhex) @ (self.Mpre) @ (Id + Mhext)) + Miii
@@ -630,7 +633,8 @@ class StokesTemplate():
                 self.ASpre = self.Apre
 
                 if self.elint and not self.it_on_sc:
-                    Ahex, Ahext, Aiii  = self.a2.harmonic_extension, self.a2.harmonic_extension_trans, self.a2.inner_solve
+                    Ahex, Ahext, Aiii  = self.a2.harmonic_extension.local_mat, self.a2.harmonic_extension_trans.local_mat, \
+                                         self.a2.inner_solve.local_mat
                     # print("Ahex ", Ahex)
                     # print("Ahext", Ahext)
                     # print("Aiii ", Aiii)
