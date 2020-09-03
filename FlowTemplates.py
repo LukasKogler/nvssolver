@@ -287,12 +287,12 @@ class MCS:
             self.Skew2Vec = lambda m : ngs.CoefficientFunction((m[0, 1] - m[1, 0], m[2, 0] - m[0, 2], m[1, 2] - m[2, 1]))
 
         if self.sym:
-            self.X = ngs.FESpace([self.V, self.Vhat, self.Sigma, self.S])
+            self.X = ngs.ProductSpace(self.V, self.Vhat, self.Sigma, self.S)
         else:
-            self.X = ngs.FESpace([self.V, self.Vhat, self.Sigma])
+            self.X = ngs.ProductSpace(self.V, self.Vhat, self.Sigma)
 
         if compound:
-            self.Xext = ngs.FESpace([self.X, self.Q])
+            self.Xext = ngs.ProductSpace(self.X, self.Q)
             if self.sym:
                 (u, uhat, sigma, W), p = self.Xext.TrialFunction()
                 (v, vhat, tau, R), q = self.Xext.TestFunction()
@@ -701,11 +701,11 @@ class StokesTemplate():
             if stokes.settings.sym:
                 eps = lambda U : 0.5 * (ngs.grad(U) + ngs.grad(U).trans)
                 a_aux += 2 * stokes.settings.nu * ngs.InnerProduct(eps(u), eps(v)) * ngs.dx
-                if not use_petsc:
+                if not use_petsc and not aux_direct:
                     amg_cl = ngs_amg.elast_2d if stokes.settings.mesh.dim == 2 else ngs_amg.elast_3d
             else:
                 a_aux += stokes.settings.nu * ngs.InnerProduct(ngs.Grad(u), ngs.Grad(v)) * ngs.dx
-                if not use_petsc:
+                if not use_petsc and not aux_direct:
                     amg_cl = ngs_amg.h1_2d if stokes.settings.mesh.dim == 2 else ngs_amg.h1_3d
 
             if stokes.settings.l2_coef is not None:
@@ -724,7 +724,6 @@ class StokesTemplate():
             # aux_pre = ngs.Preconditioner(a_aux, "bddc", coarsetype = "ngs_amg.h1_2d")
             # aux_pre = ngs.Preconditioner(a_aux, "bddc")
 
-            # aux_pre = ngs.Preconditioner(a_aux, "direct")
             if not aux_direct:
                 if not use_petsc:
                     aux_pre = amg_cl(a_aux, **amg_opts)
