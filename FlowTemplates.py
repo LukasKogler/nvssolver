@@ -87,6 +87,7 @@ class SPCST (ngs.BaseMatrix):
             self.res.data = b - self.A * x
 
         # self.xtemp.data = self.emb_pc * self.res
+        # x.data += 1/1.4*self.xtemp
         # x.data += self.xtemp
 
         self.emb_pc.MultAdd(1.0, self.res, x)
@@ -287,12 +288,12 @@ class MCS:
             self.Skew2Vec = lambda m : ngs.CoefficientFunction((m[0, 1] - m[1, 0], m[2, 0] - m[0, 2], m[1, 2] - m[2, 1]))
 
         if self.sym:
-            self.X = ngs.FESpace([self.V, self.Vhat, self.Sigma, self.S])
+            self.X = ngs.ProductSpace(self.V, self.Vhat, self.Sigma, self.S)
         else:
-            self.X = ngs.FESpace([self.V, self.Vhat, self.Sigma])
+            self.X = ngs.ProductSpace(self.V, self.Vhat, self.Sigma)
 
         if compound:
-            self.Xext = ngs.FESpace([self.X, self.Q])
+            self.Xext = ngs.ProductSpace(self.X, self.Q)
             if self.sym:
                 (u, uhat, sigma, W), p = self.Xext.TrialFunction()
                 (v, vhat, tau, R), q = self.Xext.TestFunction()
@@ -455,7 +456,8 @@ class StokesTemplate():
                 ## except when we are also using hodivfree
                 self.A = self.a.mat
                 if self.elint and not self.it_on_sc:
-                    Ahex, Ahext, Aii  = self.a.harmonic_extension, self.a.harmonic_extension_trans, self.a.inner_matrix
+                    Ahex, Ahext, Aii  = self.a.harmonic_extension.local_mat, self.a.harmonic_extension_trans.local_mat, \
+                                        self.a.inner_matrix.local_mat
                     Id = ngs.IdentityMatrix(self.A.height)
                     self.A = (Id - Ahext) @ (self.A.local_mat + Aii) @ (Id - Ahex)
                     if self.a.space.mesh.comm.size > 1:
@@ -478,7 +480,8 @@ class StokesTemplate():
             else:
                 self.M = self.m.mat
                 if self.elint and not self.it_on_sc:
-                    Mhex, Mhext, Mii  = self.m.harmonic_extension, self.m.harmonic_extension_trans, self.m.inner_matrix
+                    Mhex, Mhext, Mii  = self.m.harmonic_extension.local_mat, self.m.harmonic_extension_trans.local_mat, \
+                                        self.m.inner_matrix.local_mat
                     Id = ngs.IdentityMatrix(self.M.height)
                     self.M = (Id - Mhext) @ (self.M.local_mat + Mii) @ (Id - Mhex)
                     if self.m.space.mesh.comm.size > 1:
@@ -572,7 +575,7 @@ class StokesTemplate():
             if self.it_on_sc:
                 rv = rhs_vec[0] if self.block_la else rhs_vec
                 rv.Distribute()
-                rv.local_vec.data += self.a.harmonic_extension_trans * rv.local_vec
+                rv.local_vec.data += self.a.harmonic_extension_trans.local_mat * rv.local_vec
 
         def ExtendSol(self, sol_vec, rhs_vec):
             if self.it_on_sc:
@@ -580,8 +583,8 @@ class StokesTemplate():
                 rv = rhs_vec[0] if self.block_la else rhs_vec
                 rv.Distribute()
                 sv.Cumulate()
-                sv.local_vec.data += self.a.inner_solve * rv.local_vec
-                sv.local_vec.data += self.a.harmonic_extension * sv.local_vec
+                sv.local_vec.data += self.a.inner_solve.local_mat * rv.local_vec
+                sv.local_vec.data += self.a.harmonic_extension.local_mat * sv.local_vec
 
         def SetUpDirect(self, stokes, inv_type = None, **kwargs):
             # Direct inverse
@@ -591,7 +594,8 @@ class StokesTemplate():
                 itype = "umfpack" if inv_type is None else inv_type
                 self.Mpre = self.m.mat.Inverse(stokes.disc.Xext.FreeDofs(self.elint), inverse = itype)
                 if self.elint and not self.it_on_sc:
-                    Mhex, Mhext, Miii  = self.m.harmonic_extension, self.m.harmonic_extension_trans, self.m.inner_solve
+                    Mhex, Mhext, Miii  = self.m.harmonic_extension.local_mat, self.m.harmonic_extension_trans.local_mat, \
+                                         self.m.inner_solve
                     Id = ngs.IdentityMatrix(self.M.height)
                     if self.m.space.mesh.comm.size == 1:
                         self.Mpre = ((Id + Mhex) @ (self.Mpre) @ (Id + Mhext)) + Miii
@@ -630,7 +634,8 @@ class StokesTemplate():
                 self.ASpre = self.Apre
 
                 if self.elint and not self.it_on_sc:
-                    Ahex, Ahext, Aiii  = self.a2.harmonic_extension, self.a2.harmonic_extension_trans, self.a2.inner_solve
+                    Ahex, Ahext, Aiii  = self.a2.harmonic_extension.local_mat, self.a2.harmonic_extension_trans.local_mat, \
+                                         self.a2.inner_solve.local_mat
                     # print("Ahex ", Ahex)
                     # print("Ahext", Ahext)
                     # print("Aiii ", Aiii)
@@ -701,11 +706,11 @@ class StokesTemplate():
             if stokes.settings.sym:
                 eps = lambda U : 0.5 * (ngs.grad(U) + ngs.grad(U).trans)
                 a_aux += 2 * stokes.settings.nu * ngs.InnerProduct(eps(u), eps(v)) * ngs.dx
-                if not use_petsc:
+                if not use_petsc and not aux_direct:
                     amg_cl = ngs_amg.elast_2d if stokes.settings.mesh.dim == 2 else ngs_amg.elast_3d
             else:
                 a_aux += stokes.settings.nu * ngs.InnerProduct(ngs.Grad(u), ngs.Grad(v)) * ngs.dx
-                if not use_petsc:
+                if not use_petsc and not aux_direct:
                     amg_cl = ngs_amg.h1_2d if stokes.settings.mesh.dim == 2 else ngs_amg.h1_3d
 
             if stokes.settings.l2_coef is not None:
@@ -724,7 +729,6 @@ class StokesTemplate():
             # aux_pre = ngs.Preconditioner(a_aux, "bddc", coarsetype = "ngs_amg.h1_2d")
             # aux_pre = ngs.Preconditioner(a_aux, "bddc")
 
-            # aux_pre = ngs.Preconditioner(a_aux, "direct")
             if not aux_direct:
                 if not use_petsc:
                     aux_pre = amg_cl(a_aux, **amg_opts)
@@ -739,6 +743,7 @@ class StokesTemplate():
                 a_aux.Assemble()
                 aux_pre = a_aux.mat.Inverse(V.FreeDofs(), inverse="mumps" if ngs.mpi_world.size>1 else "sparsecholesky")
 
+            # aux_pre = ngs.la.LoggingMatrix(aux_pre, "aux_pre")
             # print("aux free ", sum(V.FreeDofs()), len(V.FreeDofs()))
             # evs_Aa = list(ngs.la.EigenValues_Preconditioner(mat=a_aux.mat, pre=aux_pre, tol=1e-10))
             # # evs_Aa = list(ngs.la.EigenValues_Preconditioner(mat=a_aux.mat, pre=ngs.Projector(V.FreeDofs(), True), tol=1e-10))
@@ -753,21 +758,24 @@ class StokesTemplate():
             # Embeddig Auxiliary space -> MCS space
             emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = True, parmat = False, bonus_intorder_ab = 2,
                                             range_dofs = stokes.disc.V.FreeDofs(self.elint))
-            tc1 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(0)) # to-compound
+            tc1 = stokes.disc.X.Embedding(0).local_mat
+            # tc1 = ngs.la.LoggingMatrix(tc1, "tc1")
+            # tc1 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(0)) # to-compound
             emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = True, parmat = False, bonus_intorder_ab = 2,
                                             range_dofs = stokes.disc.Vhat.FreeDofs(self.elint))
-            tc2 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(1)) # to-compound
-            embA = (tc1 @ emb1) + (tc2 @ emb2)
-            embA0 = embA
+            # tc2 = ngs.Embedding(stokes.disc.X.ndof, stokes.disc.X.Range(1)) # to-compound
+            tc2 = stokes.disc.X.Embedding(1).local_mat
+            # tc2 = ngs.la.LoggingMatrix(tc2, "tc2")
+            embA = tc1 @ emb1 + tc2 @ emb2
+            # embA = ngs.la.LoggingMatrix(embA, "loc embA")
             # embA = ngs.Projector(stokes.disc.X.FreeDofs(self.elint), True) @ embA
             # print("embA 1 dims ", embA.height, embA.width)
             if ngs.mpi_world.size > 1:
                 embA = ngs.ParallelMatrix(embA, row_pardofs = V.ParallelDofs(), col_pardofs = stokes.disc.X.ParallelDofs(),
                                           op = ngs.ParallelMatrix.C2C)
-            # else:
-                # embA = CVADD(embA, embA0)
-
-            # print("embA 2 dims ", embA.height, embA.width)
+            
+            # embA = ngs.la.LoggingMatrix(embA, "par embA")
+                # print("embA 2 dims ", embA.height, embA.width)
                 
             # Block-Smoother to combine with auxiliary PC    
             if mlt_smoother and V.mesh.comm.size>1 and not _ngs_amg:
@@ -806,20 +814,12 @@ class StokesTemplate():
                     raise Exception("Parallel Multiplicative block-smoothers only available with NgsAMG!")
             else:
                 bsmoother = self.a.mat.local_mat.CreateBlockSmoother(blocks = sm_blocks, parallel=True)
-                self.Apre = bsmoother + embA @ aux_pre @ embA.T
+                if ngs.mpi_world.size > 1:
+                    # bsmoother = ngs.ParallelMatrix(bsmoother, self.a.mat.row_pardofs, self.a.mat.col_pardofs, ngs.ParallelMatrix.D2D)
+                    # raise Exception("I think this does not work (anymore??)")
+                    pass
+                self.Apre = embA @ aux_pre @ embA.T + bsmoother 
 
-            # self.Apre = ngs.CGSolver(mat=self.a.mat, pre=self.Apre, printrates=False, precision=1e-2)
-                
-            # v1 = self.Apre.CreateColVector()
-            # v2 = aux_pre.CreateColVector()
-            # print("vec lens", len(v1), len(v2))
-            # print("embA dims", embA.height, embA.width)
-            # v3 = aux_pre.CreateColVector()
-            # v4 = aux_pre.CreateRowVector()
-            # print("2vec lens", len(v3), len(v4))
-            # v3 = aux_pre.local_mat.CreateColVector()
-            # v4 = aux_pre.local_mat.CreateRowVector()
-            # print("2vec lens", len(v3), len(v4))
             
             ## END SetUpAAux ##
             
