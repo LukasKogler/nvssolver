@@ -711,9 +711,9 @@ class StokesTemplate():
             if stokes.settings.l2_coef is not None:
                 a_aux += stokes.settings.l2_coef * ngs.InnerProduct(u, v) * ngs.dx
             if len(stokes.settings.outlet) > 0:
-                a_aux += 1.0/stokes.disc.h * ngs.InnerProduct(stokes.disc.tang(u), stokes.disc.tang(v)) * ngs.ds(definedon=stokes.settings.mesh.Boundaries(stokes.settings.outlet))
+                a_aux += 10*stokes.settings.nu/stokes.disc.h * ngs.InnerProduct(stokes.disc.tang(u), stokes.disc.tang(v)) * ngs.ds(definedon=stokes.settings.mesh.Boundaries(stokes.settings.outlet))
             if len(stokes.settings.wall_slip) > 0:
-                a_aux += 1.0/stokes.disc.h * ngs.InnerProduct(stokes.disc.normal(u), stokes.disc.normal(v)) * ngs.ds(definedon=stokes.settings.mesh.Boundaries(stokes.settings.wall_slip))
+                a_aux += 10*stokes.settings.nu/stokes.disc.h * ngs.InnerProduct(stokes.disc.normal(u), stokes.disc.normal(v)) * ngs.ds(definedon=stokes.settings.mesh.Boundaries(stokes.settings.wall_slip))
 
                 
             ## nodalp2 experiment
