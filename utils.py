@@ -101,7 +101,7 @@ def geo_3dchannel(H, L, W, obstacle=True):
     if obstacle == True:
         pos = (0.5, 0.2)
         r = 0.05
-        cyl = csg.Cylinder(csg.Pnt(pos[0], 0, pos[1]), csg.Pnt(pos[0], 1, pos[1]), r).bc("obstacle")
+        cyl = csg.Cylinder(csg.Pnt(pos[0], pos[1], 0), csg.Pnt(pos[0], pos[1], 1), r).bc("obstacle")
     fluiddom = channel*inlet*outlet-cyl
     geo.Add(fluiddom)
     return geo
