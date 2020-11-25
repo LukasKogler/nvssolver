@@ -731,7 +731,7 @@ class StokesTemplate():
 
             # some options can be given as lambdas that depend on the space V!
             for opt, val in amg_opts.items():
-                if type(val) == function:
+                if callable(val):
                     amg_opts[opt] = val(V)
                     
             if not aux_direct:
