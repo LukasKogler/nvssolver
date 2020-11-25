@@ -31,11 +31,14 @@ class IterativeSolver(ngs.BaseMatrix):
             self.errors.append(err)
         return err < self.tol * (self.err0 if self.rel_err else 1)
     def Height(self) -> int:
-        return self.A.width
+        return self.sysmat.width
     def Width(self) -> int:
-        return self.A.width
+        return self.sysmat.width
     def IsComplex(self) -> bool:
-        return self.A.IsComplex()
+        if type(self.sysmat) == ngs.la.BlockMatrix:
+            return self.sysmat[0,0].is_complex
+        else:
+            return self.sysmat.IsComplex()
     def CreateColVector(self):
         return self.sysmat.CreateColVector()
     def CreateRowVector(self):
@@ -207,7 +210,6 @@ class GMResSolver(IterativeSolver):
         self.tmp = self.M.CreateColVector()
         self.r = self.M.CreateColVector()
         # self.is_complex = self.M.is_complex # BlockMatrix has no is_complex
-        self.is_complex = self.tmp.is_complex
         if innerproduct is None:
             self.innerproduct = lambda x, y : y.InnerProduct(x, conjugate=self.is_complex)
             self.norm = ngs.Norm
