@@ -318,8 +318,8 @@ class MCS:
         if not self.trace_sigma:
             self.a_vol += nu * ngs.div(u) * ngs.div(v)
         if self.sym:
-           self.a_vol += ngs.InnerProduct(W, Skew2Vec(tau)) \
-                         + ngs.InnerProduct(R, Skew2Vec(sigma))
+           self.a_vol += ngs.InnerProduct(W, self.Skew2Vec(tau)) \
+                         + ngs.InnerProduct(R, self.Skew2Vec(sigma))
         self.a_bnd = - ((sigma * self.n) * self.n) * (v * self.n) \
                        - ((tau * self.n) * self.n) * (u * self.n) \
                        - (sigma * self.n) * self.tang(vhat) \
@@ -729,6 +729,11 @@ class StokesTemplate():
             # aux_pre = ngs.Preconditioner(a_aux, "bddc", coarsetype = "ngs_amg.h1_2d")
             # aux_pre = ngs.Preconditioner(a_aux, "bddc")
 
+            # some options can be given as lambdas that depend on the space V!
+            for opt, val in amg_opts.items():
+                if callable(val):
+                    amg_opts[opt] = val(V)
+                    
             if not aux_direct:
                 if not use_petsc:
                     aux_pre = amg_cl(a_aux, **amg_opts)
