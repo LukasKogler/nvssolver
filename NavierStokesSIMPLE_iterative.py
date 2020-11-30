@@ -56,8 +56,9 @@ class NavierStokes:
         for i in range(self.X.ndof):
             if self.X.CouplingType(i) == COUPLING_TYPE.WIREBASKET_DOF:
                 self.X.SetCouplingType(i, COUPLING_TYPE.INTERFACE_DOF)
-        self.v1dofs = self.X.Range(0)
-
+        #self.v1dofs = self.X.Range(0)
+        self.v1dofs = IntRange(0,self.V.ndof)
+        
         #for iterative method        
         for f in mesh.facets:
             self.X2.SetCouplingType(V.GetDofNrs(f)[1], COUPLING_TYPE.WIREBASKET_DOF)

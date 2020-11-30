@@ -3,6 +3,8 @@ import netgen.geom2d as g2d
 import netgen.csg as csg
 import sys
 
+import pickle
+
 from utils import *
 from FlowTemplates import StokesTemplate
 # from FlowTemplates import *
@@ -13,19 +15,19 @@ ngsglobals.msg_level = 1
 # flow_settings = channel2d(maxh=0.1, nu=1e-3, L=1)
 # pqr = 0
 
-# flow_settings = ST_2d(maxh=0.1, nu=1e-3)
-# flow_settings.mesh.Curve(3)
-# pqr = 0
+#flow_settings = ST_2d(maxh=0.1, nu=1e-3)
+#flow_settings.mesh.Curve(3)
+#pqr = 0
 
-# flow_settings = channel2d(maxh=0.05, nu=1e-3, L=1, nref=1)
-# pqr = 0
+#flow_settings = channel2d(maxh=0.05, nu=1e-3, L=1, nref=1)
+#pqr = 0
 
-flow_settings = channel2d(maxh=0.2, nu=1e-3, L=40)
+#flow_settings = channel2d(maxh=0.2, nu=1e-3, L=40)
+#pqr = 0
+
+flow_settings = ST_3d(maxh=0.1, nu=1e-2)
+flow_settings.mesh.Curve(3)
 pqr = 0
-
-# flow_settings = ST_3d(maxh=0.1, nu=1e-2)
-# flow_settings.mesh.Curve(3)
-# pqr = 0
 
 # flow_settings = vortex2d(maxh=0.025, nu=1)
 # pqr = 1e-6
@@ -50,15 +52,15 @@ sol_opts = { "elint" : True,
              "pc_ver" : "block", # "block", "direct"
              "pc_opts" : {
                  "a_opts" : {
-                     "type" : "direct",
+                     #"type" : "direct",
                      # "inv_type" : "mumps",
                      # "type" : "auxfacet",
                      "type" : "auxh1", 
                      # "amg_package" : "petsc",
-                     "amg_package" : "ngs_amg",
-                     #"amg_package" : "direct", # direct solve in auxiliary space
+                     #"amg_package" : "ngs_amg",
+                     "amg_package" : "direct", # direct solve in auxiliary space
                      "mlt_smoother" : True,
-                     "el_blocks" : False,
+                     "el_blocks" : True,
                      # "type" : "stokesamg", 
                      "amg_opts" : {
                          "ngs_amg_max_coarse_size" : 2,
@@ -93,14 +95,15 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
     print("X1 ndof", sum(X.components[1].FreeDofs(True)))
     print("X  ndof", sum(X.FreeDofs(True)))
 
-    if sol_opts["pc_ver"] == "block":
-        stokes.la.TestBlock()
+    #if sol_opts["pc_ver"] == "block":
+    #    stokes.la.TestBlock()
 
     ts = Timer("solve")
     ts.Start()
     nits = stokes.Solve(tol=1e-12, ms = 500, solver = "gmres", use_sz = True, rel_err = False)
     ts.Stop()
-
+    #input()
+    '''
     if mpi_world.rank == 0:
         print("\n---\ntime setup", tsup.time)
         print("nits = ", nits)
@@ -114,7 +117,7 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
         print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (ts.time * mpi_world.size) / 1000, "K" ) 
         print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (ts.time * mpi_world.size) / 1000, "K" ) 
         print("---\n")
-
+    
 
     sys.stdout.flush()
 
@@ -135,9 +138,23 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
     import matplotlib.pyplot as plt
     plt.semilogy(list(k for k,x in enumerate(stokes.solver.errors)), stokes.solver.errors)
     plt.show()
-        
+    '''
+
+    Vvel = HDiv(mesh = stokes.settings.mesh, order = disc_opts["order"])
+    myvel = GridFunction(Vvel)
+    myvel.vec.data = stokes.velocity.vec
     Draw(stokes.velocity, stokes.settings.mesh, "velocity")
+
     # stokes.la.TestBlock()
 
-sys.stdout.flush()
-# quit()
+    #
+    # quit()
+
+    
+    picklefile = open("myout.dat", "wb")
+    pickle.dump(myvel, picklefile)
+    picklefile.close()
+    #print(stokes.velocity)
+
+
+print("finished")
