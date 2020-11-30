@@ -1,0 +1,15 @@
+#!/usr/bin/bash
+#SBATCH --ntasks=1
+#SBATCH -N 1
+#SBATCH --job-name=genmesh
+#SBATCH --sockets-per-node=2
+#SBATCH --cpus-per-task=48
+#SBATCH --qos=mem_0096
+#SBATCH --time=03:00:00
+#SBATCH --output=/gpfs/data/fs70654/lkogler/stokes2/genmeshes/st3d/run.out
+
+# mkdir /gpfs/data/fs70654/lkogler/stokes2/genmeshes/st3d
+cd /gpfs/data/fs70654/lkogler/stokes2/genmeshes/st3d
+cp /home/fs70654/lkogler/src/nvssolver/utils.py /gpfs/data/fs70654/lkogler/stokes2/genmeshes/st3d/utils.py
+
+srun /opt/sw/spack-0.12.1/opt/spack/linux-centos7-x86_64/gcc-9.1.0/numactl-2.0.12-vqkmtbijxd365wv5p57d775p34bne3ov/bin/numactl --localalloc /opt/sw/spack-0.12.1/opt/spack/linux-centos7-x86_64/gcc-9.1.0/python-3.7.4-jlu2hiezkhy3lblskt232asjwyxjx2fx/bin/python3 /home/fs70654/lkogler/jobs/stokes2/genmesh_st3d.py
