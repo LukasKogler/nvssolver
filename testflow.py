@@ -1,3 +1,6 @@
+from ctypes import CDLL, RTLD_GLOBAL
+CDLL("/opt/intel/mkl/lib/intel64/libmkl_rt.so", RTLD_GLOBAL)
+
 from ngsolve import *
 import netgen.geom2d as g2d
 import netgen.csg as csg
@@ -9,7 +12,9 @@ from utils import *
 from FlowTemplates import StokesTemplate
 # from FlowTemplates import *
 
+
 ngsglobals.msg_level = 1
+ngsglobals.testout = "test.out"
 
 
 # flow_settings = channel2d(maxh=0.1, nu=1e-3, L=1)
@@ -23,21 +28,34 @@ ngsglobals.msg_level = 1
 #pqr = 0
 
 #flow_settings = channel2d(maxh=0.2, nu=1e-3, L=40)
-#pqr = 0
-
-flow_settings = ST_3d(maxh=0.1, nu=1e-2)
-flow_settings.mesh.Curve(3)
 pqr = 0
+
+# flow_settings = ST_3d(maxh=0.1, nu=1e-0, symmetric=True)
+flow_settings = ST_2d(maxh=0.04, nu=1e-0, symmetric=False)
+# flow_settings.mesh.Curve(3)
+# print(mpi_world.rank, "csg", flow_settings.mesh.GetCurveOrder())
+
+# import netgen.occ
+# occ_geo = netgen.occ.OCCGeometry("geometry/cylinder3D.step")
+# mesh = gen_ref_mesh(geo=occ_geo, maxh=100, comm=mpi_world)
+# mesh.ngmesh.SetGeometry(occ_geo)
+# mesh.Curve(3)
+# pqr = 0
+# print(mpi_world.rank, "OCC", mesh.GetCurveOrder())
+
+# quit()
 
 # flow_settings = vortex2d(maxh=0.025, nu=1)
 # pqr = 1e-6
 
-print("verts " , flow_settings.mesh.nv)
-print("edges " , flow_settings.mesh.nedge)
-print("facets " , flow_settings.mesh.nfacet)
-print("els " , flow_settings.mesh.ne)
+if mpi_world.size == 1:
+    print("verts " , flow_settings.mesh.nv)
+    print("edges " , flow_settings.mesh.nedge)
+    print("facets " , flow_settings.mesh.nfacet)
+    print("els " , flow_settings.mesh.ne)
 
-disc_opts = { "order" : 2,
+order = 2
+disc_opts = { "order" : order,
               "hodivfree" : False,
               "truecompile" : False, #mpi_world.size == 1,
               "RT" : False,
@@ -57,10 +75,10 @@ sol_opts = { "elint" : True,
                      # "type" : "auxfacet",
                      "type" : "auxh1", 
                      # "amg_package" : "petsc",
-                     #"amg_package" : "ngs_amg",
-                     "amg_package" : "direct", # direct solve in auxiliary space
+                     "amg_package" : "ngs_amg",
+                     # "amg_package" : "direct", # direct solve in auxiliary space
                      "mlt_smoother" : True,
-                     "el_blocks" : True,
+                     "el_blocks" : False,
                      # "type" : "stokesamg", 
                      "amg_opts" : {
                          "ngs_amg_max_coarse_size" : 2,
@@ -73,16 +91,16 @@ sol_opts = { "elint" : True,
                          "ngs_amg_sp_max_per_row" : 4,
                          "ngs_amg_ecw_robust" : False,
                          "ngs_amg_enable_multistep" : False,
-                         "ngs_amg_log_level" : "extra",
-                         "ngs_amg_print_log" : True,
-                         "ngs_amg_do_test" : True,
+                         "ngs_amg_log_level" : "none",
+                         "ngs_amg_print_log" : False,
+                         "ngs_amg_do_test" : False,
                          }
                  }
              }
 }
 
 # SetNumThreads(1)
-with TaskManager(pajetrace = 50 * 2024 * 1024):
+with TaskManager():#pajetrace = 50 * 2024 * 1024):
 
     tsup = Timer("solve")
     tsup.Start()
@@ -96,14 +114,15 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
     print("X  ndof", sum(X.FreeDofs(True)))
 
     #if sol_opts["pc_ver"] == "block":
-    #    stokes.la.TestBlock()
+    stokes.la.TestBlock()
+
+    quit()
 
     ts = Timer("solve")
     ts.Start()
-    nits = stokes.Solve(tol=1e-12, ms = 500, solver = "gmres", use_sz = True, rel_err = False)
+    nits = stokes.Solve(tol=1e-6, ms = 500, solver = "gmres", use_sz = True, rel_err = False)
     ts.Stop()
     #input()
-    '''
     if mpi_world.rank == 0:
         print("\n---\ntime setup", tsup.time)
         print("nits = ", nits)
@@ -118,7 +137,26 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
         print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (ts.time * mpi_world.size) / 1000, "K" ) 
         print("---\n")
     
+    mesh = stokes.disc.X.mesh    
+    V_vis_u = HDiv(mesh, order=order)
+    u_vis = GridFunction(V_vis_u)
+    u_vis.Set(stokes.velocity)
+    V_vis_p = L2(mesh, order=order-1)
+    p_vis = GridFunction(V_vis_p)
+    p_vis.Set(stokes.pressure)
+    import pickle
+    netgen.meshing.SetParallelPickling(True)
+    pickle_file_sol = "stokes_sol_st3d.pickle"
+    my_pfs = pickle_file_sol.replace(".pickle", "_" + str(mpi_world.rank) + ".pickle")
+    pickle.dump((u_vis, p_vis), open(my_pfs, "wb"))
+    mpi_world.Barrier()
+    if mpi_world.rank==0:
+        solu, solp = pickle.load(open(my_pfs, "rb"))
+        vtk = VTKOutput(ma=solu.space.mesh, coefs=[solu, solp], names=["vel", "pressure"], filename="sol_st3d", subdivision=1)
+        vtk.Do()
+    mpi_world.Barrier()
 
+    '''
     sys.stdout.flush()
 
     sol_opts["elint"] = False

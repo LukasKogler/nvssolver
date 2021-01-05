@@ -1,4 +1,3 @@
-
 from ngsolve import *
 import netgen.geom2d as g2d
 import netgen.csg as csg
@@ -14,7 +13,7 @@ ngsglobals.msg_level = 1
 # flow_settings.mesh.Curve(3)
 # pqr = 0
 
-flow_settings = channel2d(maxh=0.1, nu=1e-3, L=1)
+flow_settings = channel2d(maxh=0.05, nu=1, L=20)
 pqr = 0
 
 # flow_settings = ST_3d(maxh=0.1, nu=1e-2)
@@ -36,10 +35,12 @@ disc_opts = { "order" : 2,
               "compress" : True,
               #"divdivpen" : 0,
               "trace_sigma" : False,
-              "divdivpen" : 1e4,
+              "divdivpen" : 1e2,
               "pq_reg" : pqr }
 
-d = 1
+ddp = disc_opts["divdivpen"]
+
+d = -1
 
 sol_opts = { "elint" : True,
              # "block_la" : False,
@@ -60,39 +61,48 @@ sol_opts = { "elint" : True,
                      "el_blocks" : False,
                      # "type" : "stokesamg", 
                      "amg_opts" : {
-                         "ngs_amg_gs_ver" : 3,
                          "ngs_amg_aux_elmats" : False,
                          "ngs_amg_max_coarse_size" : 1,
-                         "ngs_amg_max_levels" : 2,
-                         "ngs_amg_sm_type" : "bs",
-                         "ngs_amg_energy" : "triv",
-                         # "ngs_amg_spec_sm_types" : ["bgs", "bgs"],
-                         "ngs_amg_keep_grid_maps" : True,
-                         "ngs_amg_n_levels_d2_agg" : 1,
+                         "ngs_amg_max_levels" : 30,
+                         "ngs_amg_energy" : "alg",
+                         "ngs_amg_n_levels_d2_agg" : 10,
                          "ngs_amg_ecw_geom" : False,
-                         "ngs_amg_clev" : "inv",
-                         "ngs_amg_enable_sp" : True,
-                         "ngs_amg_sp_max_per_row" : 6,
+                         "ngs_amg_clev" : "none",
+                         "ngs_amg_enable_sp" : False,
+                         "ngs_amg_sp_max_per_row" : 3,
                          "ngs_amg_ecw_robust" : False,
                          "ngs_amg_enable_multistep" : False,
                          "ngs_amg_aaf" : 0.1,
-                         "ngs_amg_first_aaf" : 0.05,
+                         "ngs_amg_first_aaf" : 0.2,
+                         "ngs_amg_gs_ver" : 3,
+                         "ngs_amg_mg_cycle" : "BS",
+                         "ngs_amg_sm_type" : "bgs",
+                         "ngs_amg_sm_shm" : True,
+                         "ngs_amg_sm_sl2" : True,
+                         "ngs_amg_sm_steps" : 1,
+                         "ngs_amg_sm_symm" : False,
+                         "ngs_amg_spec_sm_types" : ["bgs", "bgs"],
+                         "ngs_amg_keep_grid_maps" : True,
+                         "ngs_amg_hpt_sm" : True,
+                         "ngs_amg_hpt_sm_blk" : False,
+                         "ngs_amg_comp_sm" : True,
+                         "ngs_amg_comp_sm_steps" : 1,
+                         "ngs_amg_comp_sm_blocks" : False,
+                         "ngs_amg_comp_sm_blocks_el" : False,
                          "ngs_amg_log_level" : "extra",
                          "ngs_amg_print_log" : True,
                          "ngs_amg_do_test" : True,
-                         "ngs_amg_hpt_sm" : True,
-                         "ngs_amg_comp_sm" : True,
-                         "ngs_amg_comp_sm_blocks" : True,
-                         "ngs_amg_comp_sm_blocks_el" : False,
                          }
                  }
              }
 }
 
-#SetNumThreads(1)
-with TaskManager():#pajetrace = 50 * 2024 * 1024):
+tsup = Timer("setup")
+ts = Timer("solve")
 
-    tsup = Timer("solve")
+SetNumThreads(1)
+with TaskManager(pajetrace = 100 * 1024 * 1024):
+
     tsup.Start()
     stokes = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts )
     tsup.Stop()
@@ -103,14 +113,14 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
     print("X1 ndof", sum(X.components[1].FreeDofs(True)))
     print("X  ndof", sum(X.FreeDofs(True)))
 
-    ts = Timer("solve")
     ts.Start()
-    nits = stokes.Solve(tol=1e-12, ms = 500, solver = "minres", rel_err = False, presteps = 0)
-    nits = 0
+    nits = stokes.Solve(tol=1e-8/ddp, ms = 200, solver = "gmres", use_sz = True, rel_err = False, presteps = 0)
+    # nits = stokes.Solve(tol=1e-8, ms = 200, solver = "apply_pc", use_sz = True, rel_err = False, presteps = 0)
+    # nits = 0
     ts.Stop()
 
-    if stokes.la.block_la:
-        stokes.la.TestBlock()
+    # if stokes.la.block_la:
+    #     stokes.la.TestBlock()
 
     if mpi_world.rank == 0:
         print("\n---\ntime setup", tsup.time)
@@ -154,14 +164,10 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
         # print(*x)
     # print("diff sol vec: ", [ stokes.disc.X.CouplingType(x[0]) for x in enumerate(err.vec) if abs(x[1])>1e-8])
     
-    # import matplotlib.pyplot as plt
-    # plt.semilogy(list(k for k,x in enumerate(stokes.solver.errors)), stokes.solver.errors)
-    # plt.show()
-        
     Draw(stokes.velocity, stokes.settings.mesh, "velocity")
     # stokes.la.TestBlock()
 
-    if True:
+    if False:
         pcm = stokes.la.Apre @ stokes.la.A
         print("get evals!")
         evecs, evals = MatIter (pcm, n_vecs = 3, lam_max = 1, lam_min = 0, reverse = True, M = 1e3, startvec = None, tol=1e-6, freedofs = stokes.disc.X.FreeDofs(stokes.la.elint and stokes.la.it_on_sc))
@@ -188,7 +194,7 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
         sol_opts["pc_ver"] = "direct"
         # sol_opts["elint"] = False
         stokesex = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts)
-        stokesex.Solve(tol=1e-6, ms = 500, solver = "apply_pc")
+        stokesex.Solve(tol=1e-6, ms = 200, solver = "apply_pc")
 
         err = GridFunction(stokes.disc.V)
         err.vec.data = stokes.velocity.vec - stokesex.velocity.vec
@@ -196,6 +202,13 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
         norm_errl2 = abs(Integrate((stokes.velocity - stokesex.velocity)**2, flow_settings.mesh))**0.5
         print("norm err l2 = ", norm_err)
         print("norm err L2 = ", norm_errl2)
+
+    import matplotlib.pyplot as plt
+    plt.semilogy(list(k for k,x in enumerate(stokes.solver.errors)), stokes.solver.errors)
+    # plt.semilogy(list(k for k,x in enumerate(stokes.solver.errors)), list(stokes.solver.errors[0]/(10**k) for k in range(len(stokes.solver.errors))))
+    plt.semilogy(list(k for k,x in enumerate(stokes.solver.errors)), list(0.5**k * stokes.solver.errors[0] for k in range(len(stokes.solver.errors))))
+    plt.title("StokesAMG")
+    plt.show()
 
             
     if d == 1:

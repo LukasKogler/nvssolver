@@ -4,6 +4,8 @@ from ngsolve.internal import viewoptions
 from netgen.geom2d import unit_square
 from ngsolve.la import EigenValues_Preconditioner
 
+ngsglobals.msg_level = 1
+
 mesh = Mesh(unit_square.GenerateMesh(maxh = 0.1))
 Draw(mesh)
 

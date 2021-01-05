@@ -47,15 +47,17 @@ class CVADD (ngs.BaseMatrix):
         return self.Mcv.CreateRowVector()
     
 class SPCST (ngs.BaseMatrix):
-    def __init__(self, smoother, pc, mat, emb, swr = True):
+    def __init__(self, smoother, pc, mat, emb, swr = True, proj=None):
         super(SPCST, self).__init__()
-        self.swr = True # smooth with residuum
+        self.swr = swr # smooth with residuum
         self.A = mat
         self.S = smoother
         self.pc = pc
+        self.proj = proj
         self.E = emb
         self.ET = emb.T
-        self.emb_pc = self.E @ self.pc @ self.ET
+        if self.pc is not None:
+            self.emb_pc = self.E @ self.pc @ self.ET
         self.xtemp = self.S.CreateColVector()
         self.res = self.S.CreateColVector()
         self.baux = self.E.CreateColVector()
@@ -78,24 +80,36 @@ class SPCST (ngs.BaseMatrix):
     def MultTrans(self, b, x):
         self.Mult(b, x)
     def Mult(self, b, x):
+        xo = x.CreateVector()
+        xu = x.CreateVector()
         x[:] = 0
         if self.swr: # Forward smoothing - update residual
             self.res.data = b
             self.S.Smooth(x, b, self.res, x_zero = True, res_updated = True, update_res = True)
+            x.data *= 0.9
         else:
             self.S.Smooth(x, b)
-            self.res.data = b - self.A * x
+        if self.proj is not None:
+            self.proj.Project(x)
 
         # self.xtemp.data = self.emb_pc * self.res
         # x.data += 1/1.4*self.xtemp
         # x.data += self.xtemp
 
-        self.emb_pc.MultAdd(1.0, self.res, x)
-        
+        if self.pc is not None:
+            if not self.swr:
+                self.res.data = b - self.A * x
+            self.emb_pc.MultAdd(1.0, self.res, x)
+
         if self.swr: # Backward smoothing - no need to update residual
+            xo.data = x
             self.S.SmoothBack(x, b, self.res, False, False, False)
+            xu.data = x - xo
+            x.data = xo + 0.9 * xu
         else:
             self.S.SmoothBack(x, b)
+        if self.proj is not None:
+            self.proj.Project(x)
 
 # Schoeberl-Zulehner PC
 class SZPC(ngs.BaseMatrix):
@@ -327,8 +341,8 @@ class MCS:
         if self.settings.l2_coef is not None:
             self.a_vol += self.settings.l2_coef * ngs.InnerProduct(u, v)
             self.a_bnd += self.settings.l2_coef * ngs.InnerProduct(self.tang(uhat), self.tang(vhat))
-        self.b_vol = ngs.div(u) * q
-        self.bt_vol = ngs.div(v) * p
+        self.b_vol = -ngs.div(u) * q
+        self.bt_vol = -ngs.div(v) * p
 
         # This is useful in some cases.
         self.divdiv = ngs.div(u) * ngs.div(v)
@@ -447,6 +461,8 @@ class StokesTemplate():
             self.SetUpFWOps(stokes)
             self.SetUpRHS(stokes)
 
+            self.ssmonly = ngs.Preconditioner(self.a, "local")
+
             self.Assemble()
 
             self.need_bp_scale = True
@@ -502,6 +518,11 @@ class StokesTemplate():
                                           store_inner = self.elint and not self.it_on_sc)
                 self.a += stokes.disc.stokesA()
                 # self.a += 1e2 * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
+
+                self.af = ngs.BilinearForm(stokes.disc.X, condense = False, eliminate_hidden = stokes.disc.compress)
+                self.af += stokes.disc.stokesA()
+
+                self._to_assemble += [ self.af ]
 
                 if stokes.disc.ddp != 0:
                     u, uhat, sigma = stokes.disc.X.TrialFunction()
@@ -636,9 +657,6 @@ class StokesTemplate():
                 if self.elint and not self.it_on_sc:
                     Ahex, Ahext, Aiii  = self.a2.harmonic_extension.local_mat, self.a2.harmonic_extension_trans.local_mat, \
                                          self.a2.inner_solve.local_mat
-                    # print("Ahex ", Ahex)
-                    # print("Ahext", Ahext)
-                    # print("Aiii ", Aiii)
                     Id = ngs.IdentityMatrix(self.A.height)
                     if self.a.space.mesh.comm.size == 1:
                         self.Apre = ((Id + Ahex) @ (self.Apre) @ (Id + Ahext)) + Aiii
@@ -809,9 +827,19 @@ class StokesTemplate():
             # The entire PC
             # aux_pre = ngs.CGSolver(mat=a_aux.mat, pre=aux_pre, printrates=False, precision=1e-6)
             if mlt_smoother:
+                proj = ngs.Projector(stokes.disc.X.FreeDofs(self.elint), True)
                 if _ngs_amg:
-                    bsmoother = ngs_amg.CreateHybridBlockGSS(mat = self.a.mat, blocks = sm_blocks, shm = ngs.mpi_world.size == 1)
-                    self.Apre = SPCST(smoother = bsmoother, mat = self.a.mat, pc = aux_pre, emb = embA, swr = True)
+                    bsmoother = ngs_amg.CreateHybridBlockGSS(mat = self.a.mat, blocks = sm_blocks, shm = ngs.mpi_world.size == 1,
+                                                             mpi_thread = ngs.mpi_world.size>1, mpi_overlap=ngs.mpi_world.size>1)
+                    self.Apre = SPCST(smoother = bsmoother, mat = self.a.mat, pc = aux_pre, emb = embA, swr = True, proj=proj)
+
+                    self.smonly = SPCST(smoother = bsmoother, mat = self.a.mat, pc = None, emb = embA, swr = True, proj=proj)
+                    ssmoother = ngs_amg.CreateHybridGSS(mat=self.a.mat, freedofs=stokes.disc.X.FreeDofs(self.elint),
+                                                        mpi_overlap=False, mpi_thread=False)
+                    self.sssmonly = SPCST(smoother = ssmoother, mat = self.a.mat, pc = None, emb = embA, swr = True, proj=proj)
+                    if ngs.mpi_world.size==1:
+                        ngs_ssmoother = self.a.mat.CreateSmoother(stokes.disc.X.FreeDofs(self.elint))
+                        self.ngs_sssmonly = SPCST(smoother = ngs_ssmoother, mat = self.a.mat, pc = None, emb = embA, swr = False, proj=proj)
                 elif ngs.mpi_world.size == 1:
                     bsmoother = self.a.mat.local_mat.CreateBlockSmoother(sm_blocks)
                     self.Apre = SPCST(smoother = bsmoother, mat = self.a.mat, pc = aux_pre, emb = embA, swr = False)
@@ -886,15 +914,92 @@ class StokesTemplate():
             o_ms_l = ngs.ngsglobals.msg_level
             ngs.ngsglobals.msg_level = 0
 
-            evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=self.Apre, tol=1e-10))
-            if self.a.space.mesh.comm.rank == 0:
-                print("\n----")
-                print("Block-PC Condition number test")
-                print("--")
-                print("EVs for A block")
-                print("min ev. preA\A:", evs_A[:5])
-                print("max ev. preA\A:", evs_A[-5:])
-                print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
+            def test_pre(mat, matname, pre, prename):
+                if self.a.space.mesh.comm.rank == 0:
+                    print("\n----")
+                    print("Block-PC Condition number test")
+                    print("--")
+                    print("EVs for mat = " + matname + ", prec = " + prename)
+                    sys.stdout.flush()
+                evs = list(ngs.la.EigenValues_Preconditioner(mat=mat, pre=pre, tol=1e-32))
+                if self.a.space.mesh.comm.rank == 0:
+                    # print(evs)
+                    print("min ev. Sm\A:", evs[:3])
+                    print("max ev. Sm\A:", evs[-3:])
+                    print("cond-nr Sm\A:", evs[-1]/evs[0])
+                    sys.stdout.flush()
+                return evs
+
+            if self.elint:
+                # print("ind / free(F) / free(T)")
+                # for k in range(self.a2.space.ndof):
+                    # print(k, self.a2.space.FreeDofs(True)[k], self.a2.space.FreeDofs(False)[k])
+                Ahex, Ahext, Aiii  = self.a2.harmonic_extension.local_mat, self.a2.harmonic_extension_trans.local_mat, \
+                                     self.a2.inner_solve.local_mat
+                Aii = self.a2.inner_matrix.local_mat
+                # Id = ngs.IdentityMatrix(self.A.height)
+                # Id = ngs.Projector(self.a2.space.FreeDofs(self.elint), True)
+                pId = ngs.Projector(self.a2.space.FreeDofs(True), True)
+                peId = ngs.Projector(self.a2.space.FreeDofs(False), True)
+                oId = ngs.IdentityMatrix(self.a2.space.ndof)
+                pId = oId @ pId @ oId # createvector bullshit...
+                peId = oId @ peId @ oId # createvector bullshit...
+                Id = oId
+                def ext_op(AOP, bw=True):
+                    if self.a.space.mesh.comm.size == 1:
+                        if bw:
+                            return ((peId + peId@Ahex@pId) @ (pId@AOP@pId + Aiii) @ (peId + pId@Ahext@peId))
+                        else:
+                            # return ngs.IdentityMatrix(AOP.height)
+                            # return Id
+                            # return (Id - Ahext) @ (Id - Ahex)
+                            # return pId
+                            # return (AOP.local_mat)
+                            return (oId - Ahext) @ (AOP + Aii) @ (oId - Ahex)
+                    else:
+                        if bw:
+                            Ihex = ngs.ParallelMatrix(Id + Ahex, row_pardofs = self.a.mat.row_pardofs,
+                                                      col_pardofs = self.a.mat.row_pardofs, op = ngs.ParallelMatrix.C2C)
+                            Ihext = ngs.ParallelMatrix(Id + Ahext, row_pardofs = self.a.mat.row_pardofs,
+                                                       col_pardofs = self.a.mat.row_pardofs, op = ngs.ParallelMatrix.D2D)
+                            Isolve = ngs.ParallelMatrix(Aiii, row_pardofs = self.a.mat.row_pardofs,
+                                                        col_pardofs = self.a.mat.row_pardofs, op = ngs.ParallelMatrix.D2C)
+                            return ( Ihex @ AOP @ Ihext ) # + Isolve
+                        else:
+                            raise Exception("todo")
+                            return (Id - Ahext) @ (self.A.local_mat + Aii) @ (Id - Ahex)
+
+            test_pre(self.a.mat, "amat", self.sssmonly, "amg_gs")
+            # if ngs.mpi_world.size==1:
+                # test_pre(self.a.mat, "amat", self.ngs_sssmonly, "ngs_gs")
+            # test_pre(self.a.mat, "amat", self.smonly, "bgs")
+            # test_pre(self.a.mat, "amat", self.ssmonly, "add_jac")
+
+            if self.elint:
+                test_pre(ext_op(self.a2.mat, bw=False), "ext_amat", ext_op(self.sssmonly), "ext_amg_gs")
+                test_pre(self.af.mat, "af_mat", ext_op(self.sssmonly), "ext_amg_gs")
+                op = ext_op(self.a2.mat, bw=False) - self.af.mat
+                op_opt = op @ op.T
+                test_pre(op_opt, "af_min_ext", oId, "ext_amg_gs")
+                # if ngs.mpi_world.size==1:
+                    # test_pre(self.A, "ext_amat", ext_op(self.ngs_sssmonly), "ext_ngs_gs")
+                # test_pre(self.A, "ext_amat", ext_op(self.smonly), "ext_bgs")
+                # test_pre(ext_op(self.a.mat, bw=False), "ext_amat", ext_op(self.ssmonly), "ext_add_jac")
+                
+            # evs_A = test_pre(self.A, "A", self.Apre, "Apre")
+            evs_A = [1.0] * 20
+
+            # evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.Apre, tol=1e-6))
+            # sys.stdout.flush()
+            # if self.a.space.mesh.comm.rank == 0:
+            #     print("\n----")
+            #     print("Block-PC Condition number test")
+            #     print("--")
+            #     print("EVs for A block")
+            #     print("min ev. preA\A:", evs_A[:5])
+            #     print("max ev. preA\A:", evs_A[-5:])
+            #     print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
+            # sys.stdout.flush()
 
             # if self.elint and not self.it_on_sc:
             #     evs_AS = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.ASpre, tol=1e-10))
@@ -913,10 +1018,11 @@ class StokesTemplate():
             else:
                 S = self.B @ self.Apre @ self.B.T
 
-            evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-14))
-            # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=ngs.IdentityMatrix(S.height), tol=1e-14))
+            # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-14))
+            # # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=ngs.IdentityMatrix(S.height), tol=1e-14))
+            evs_S = [1.0] * 20
             evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
-
+            
             if self.a.space.mesh.comm.rank == 0:
                 print("--")
                 print("EVs for Schur Complement")
