@@ -55,7 +55,8 @@ class SPCST (ngs.BaseMatrix):
         self.pc = pc
         self.E = emb
         self.ET = emb.T
-        self.emb_pc = self.E @ self.pc @ self.ET
+        if self.pc is not None:
+            self.emb_pc = self.E @ self.pc @ self.ET
         self.xtemp = self.S.CreateColVector()
         self.res = self.S.CreateColVector()
         self.baux = self.E.CreateColVector()
@@ -90,8 +91,9 @@ class SPCST (ngs.BaseMatrix):
         # x.data += 1/1.4*self.xtemp
         # x.data += self.xtemp
 
-        self.emb_pc.MultAdd(1.0, self.res, x)
-        
+        if self.pc is not None:
+            self.emb_pc.MultAdd(1.0, self.res, x)
+
         if self.swr: # Backward smoothing - no need to update residual
             self.S.SmoothBack(x, b, self.res, False, False, False)
         else:
