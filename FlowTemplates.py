@@ -318,7 +318,7 @@ class MCS:
                      + ngs.div(sigma) * v \
                      + ngs.div(tau) * u
         if not self.trace_sigma:
-            self.a_vol += nu * ngs.div(u) * ngs.div(v)
+            self.a_vol += 1.0/self.settings.mesh.dim * nu * ngs.div(u) * ngs.div(v)
         if self.sym:
            self.a_vol += ngs.InnerProduct(W, self.Skew2Vec(tau)) \
                          + ngs.InnerProduct(R, self.Skew2Vec(sigma))
@@ -501,7 +501,7 @@ class StokesTemplate():
             # Forward operators
             if self.block_la:
                 self.a = ngs.BilinearForm(stokes.disc.X, condense = self.elint, eliminate_hidden = stokes.disc.compress, \
-                                          store_inner = self.elint and not self.it_on_sc)
+                                          store_inner = self.elint and not self.it_on_sc, elmatev = False)
                 self.a += stokes.disc.stokesA()
                 # self.a += 1e2 * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
 
