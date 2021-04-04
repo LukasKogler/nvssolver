@@ -19,7 +19,7 @@ except:
     _ngs_petsc = False
 
 # _ngs_petsc = False
-    
+
 ### Misc Utilities ###
 class CVADD (ngs.BaseMatrix):
     def __init__(self, M, Mcv):
@@ -80,22 +80,16 @@ class SPCST (ngs.BaseMatrix):
     def MultTrans(self, b, x):
         self.Mult(b, x)
     def Mult(self, b, x):
-        x[:] = 0
+        x[:] = 0.0
         if self.swr: # Forward smoothing - update residual
             self.res.data = b
-            self.S.SmoothK(self.steps, x, b, self.res, True, True, True)            
+            self.S.SmoothK(self.steps, x, b, self.res, True, True, True)
         else:
             for l in range(self.steps):
                 self.S.Smooth(x, b)
             self.res.data = b - self.A * x
-
-        # self.xtemp.data = self.emb_pc * self.res
-        # x.data += 1/1.4*self.xtemp
-        # x.data += self.xtemp
-
         if self.pc is not None:
             self.emb_pc.MultAdd(1.0, self.res, x)
-
         if self.swr: # Backward smoothing - no need to update residual
             self.S.SmoothBackK(self.steps, x, b, self.res, False, False, False)
         else:
@@ -192,7 +186,7 @@ class FlowOptions:
     A collection of parameters for Stokes/Navier-Stokes computations. Collects Boundary-conditions
     """
     def __init__(self, mesh, geom = None, nu = 1, inlet = "", outlet = "", wall_slip = "", wall_noslip = "",
-                 uin = None, symmetric = True, vol_force = None, l2_coef = None):
+                 uin = None, symmetric = True, vol_force = None, l2_coef = None, fluid_domain = None):
         # geom/mesh
         self.geom = geom
         self.mesh = mesh
@@ -202,6 +196,9 @@ class FlowOptions:
         self.vol_force = vol_force
         self.l2_coef = l2_coef
 
+        # domains
+        self.fluid_domain = ".*" if fluid_domain is None else fluid_domain
+        
         # BCs
         self.inlet = inlet
         self.uin = uin
@@ -233,37 +230,50 @@ class MCS:
 
         # Spaces
         self.V = ngs.HDiv(settings.mesh, order = self.order, RT = self.RT, hodivfree = self.hodivfree, \
-                          dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.wall_slip)
+                          dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.wall_slip, \
+                          definedon = self.settings.fluid_domain)
         if self.RT:
             if True: # "correct" version
                 self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, \
-                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
+                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet, \
+                          definedon = self.settings.fluid_domain)
             else: # not "correct", but works with facet-aux
                 self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, \
-                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|")
-            self.Sigma = ngs.HCurlDiv(settings.mesh, order = order, GGBubbles = True, discontinuous = True, ordertrace = self.order if self.trace_sigma else -1)
+                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|", \
+                          definedon = self.settings.fluid_domain)
+            self.Sigma = ngs.HCurlDiv(settings.mesh, order = order, GGBubbles = True, discontinuous = True, \
+                                      ordertrace = self.order if self.trace_sigma else -1, \
+                                      definedon = self.settings.fluid_domain)
             # self.Sigma = ngs.HCurlDiv(mesh, order=order + 1, discontinuous=True, ordertrace=order) # slower I think
-            self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order)
+            self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order, \
+                            definedon = self.settings.fluid_domain)
             raise Exception("AAA")
         else:
             if True: # "correct" version
                 # self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
                                                        # dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
                 self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
-                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
+                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet, \
+                            definedon = self.settings.fluid_domain)
             else: # works with facet-aux
                 self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
-                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip)
-            self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True, ordertrace = self.order-1 if self.trace_sigma else -1)
+                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip, \
+                            definedon = self.settings.fluid_domain)
+            self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, \
+                                      discontinuous = True, ordertrace = self.order-1 if self.trace_sigma else -1, \
+                                        definedon = self.settings.fluid_domain)
             # self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True)
             # self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True)
-            self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order-1)
+            self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order-1, \
+                            definedon = self.settings.fluid_domain)
 
         if self.sym:
             if settings.mesh.dim == 2:
-                self.S = ngs.L2(settings.mesh, order=self.order if self.RT else order-1)
+                self.S = ngs.L2(settings.mesh, order=self.order if self.RT else order-1, \
+                            definedon = self.settings.fluid_domain)
             else:
-                self.S = ngs.VectorL2(settings.mesh, order=self.order if self.RT else order-1)
+                self.S = ngs.VectorL2(settings.mesh, order=self.order if self.RT else order-1, \
+                            definedon = self.settings.fluid_domain)
         else:
             self.S = None
 
@@ -273,7 +283,12 @@ class MCS:
             if self.sym:
                 self.S.SetCouplingType(ngs.IntRange(0, self.S.ndof), ngs.COUPLING_TYPE.HIDDEN_DOF)
                 self.S = ngs.Compress(self.S)
-
+            if self.settings.fluid_domain != ".*":
+                self.V = ngs.Compress(self.V)
+                self.Vhat = ngs.Compress(self.Vhat)
+                self.Q = ngs.Compress(self.Q)
+        
+                
 
     def Compile (self, term):
         return term.Compile(realcompile = self.truecompile, wait = True)
@@ -310,6 +325,9 @@ class MCS:
             if self.sym:
                 u, uhat, sigma, W = self.X.TrialFunction()
                 v, vhat, tau, R = self.X.TestFunction()
+                # this way W, R scale like sigma, tau (for numerical stability) 
+                W = 1/self.h**self.settings.mesh.dim * W
+                R = 1/self.h**self.settings.mesh.dim * R
             else:
                 u, uhat, sigma = self.X.TrialFunction()
                 v, vhat, tau = self.X.TestFunction()
@@ -533,7 +551,7 @@ class StokesTemplate():
                 else:
                     self.c = None
 
-                self._to_assemble += [ self.a, self.a2, self.b, self.c ]
+                self._to_assemble += [ self.a, self.b, self.c ]
 
             else:
                 if self.elint:
@@ -698,9 +716,10 @@ class StokesTemplate():
                 # V = ngs_amg.NoCoH1(stokes.settings.mesh, dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet, \
                                    # dim = stokes.settings.mesh.dim)
                 V = ngs.H1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet, \
-                           dim = stokes.settings.mesh.dim)
+                           dim = stokes.settings.mesh.dim, definedon = stokes.settings.fluid_domain)
             else:
-                V = ngs.VectorH1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet)
+                V = ngs.VectorH1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet, \
+                                 definedon = stokes.settings.fluid_domain)
                 # V = ngs.VectorH1(stokes.settings.mesh, order = 1, dirichletx = stokes.settings.wall_noslip + "|" + stokes.settings.inlet,
                                  # dirichlety = stokes.settings.wall_noslip + "|" + stokes.settings.inlet + "|" + stokes.settings.outlet)
 
@@ -753,19 +772,6 @@ class StokesTemplate():
             else:
                 a_aux.Assemble()
                 aux_pre = a_aux.mat.Inverse(V.FreeDofs(), inverse="mumps" if ngs.mpi_world.size>1 else "sparsecholesky")
-
-            # aux_pre = ngs.la.LoggingMatrix(aux_pre, "aux_pre")
-            # print("aux free ", sum(V.FreeDofs()), len(V.FreeDofs()))
-            # evs_Aa = list(ngs.la.EigenValues_Preconditioner(mat=a_aux.mat, pre=aux_pre, tol=1e-10))
-            # # evs_Aa = list(ngs.la.EigenValues_Preconditioner(mat=a_aux.mat, pre=ngs.Projector(V.FreeDofs(), True), tol=1e-10))
-            # if self.a.space.mesh.comm.rank == 0:
-            #     print("\n----")
-            #     print("EVs for A in aux space")
-            #     print("min ev. preAa\Aa:", evs_Aa[:5])
-            #     print("max ev. preAa\Aa:", evs_Aa[-5:])
-            #     print("cond-nr preAa\Aa:", evs_Aa[-1]/evs_Aa[0])
-            #     print("----")
-
 
             # Embeddig Auxiliary space -> MCS space
             emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = True, parmat = False, bonus_intorder_ab = 2,
@@ -828,13 +834,20 @@ class StokesTemplate():
                         sm_symm = sm_symm or sm_symm_loc
                     if blk_smoother:
                         smoother = ngs_amg.CreateHybridBlockGSS(mat = self.a.mat, blocks = sm_blocks, shm = False,#ngs.mpi_world.size == 1,
-                                                                mpi_overlap = True, mpi_thread = False,
+                                                                mpi_overlap = True, mpi_thread = False, pinv = False,
                                                                 bs2 = True, blocks_no = False,
                                                                 nsteps = sm_nsteps, symm = sm_symm,
                                                                 nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
                     else:
-                        smoother = ngs_amg.CreateHybridGSS(mat = self.a.mat, freedofs = x_free, mpi_overlap = True, mpi_thread = True)
+                        if False:
+                            smoother = ngs_amg.CreateHybridDISmoother(mat=self.a.mat, freedofs=x_free, mpi_overlap=False, mpi_thread=False,
+                                                                      symm=False, nsteps=1)
+                        else:
+                            smoother = ngs_amg.CreateHybridGSS(mat = self.a.mat, freedofs = x_free, mpi_overlap = True, mpi_thread = True,
+                                                               nsteps = sm_nsteps, symm = sm_symm, pinv = False,
+                                                               nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
                     self.Apre = SPCST(smoother = smoother, mat = self.a.mat, pc = aux_pre, emb = embA, swr = True, steps = 1)
+                    # self.Apre = SymSM(self.a.mat, smoother, swr=True)
                 elif ngs.mpi_world.size == 1:
                     if blk_smoother:
                         smoother = self.a.mat.local_mat.CreateBlockSmoother(sm_blocks)
@@ -916,20 +929,23 @@ class StokesTemplate():
                 evs_AS = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.ASpre, tol=1e-10))
                 if self.a.space.mesh.comm.rank == 0:
                     print("--")
+                    print("Block-PC Condition number test")
                     print("EVs for condensed A block")
                     print("min ev. preA\A:", evs_AS[:5])
                     print("max ev. preA\A:", evs_AS[-5:])
                     print("cond-nr preA\A:", evs_AS[-1]/evs_AS[0])
 
-            evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=self.Apre, tol=1e-14))
+            evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=self.Apre, tol=1e-10))
             if self.a.space.mesh.comm.rank == 0:
                 print("\n----")
-                print("Block-PC Condition number test")
+                if not(self.elint and not self.it_on_sc):
+                    print("Block-PC Condition number test")
                 print("--")
                 print("EVs for A block")
                 print("min ev. preA\A:", evs_A[:5])
                 print("max ev. preA\A:", evs_A[-5:])
                 print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
+            # quit()
             
             if exai:
                 if self.elint:
@@ -939,7 +955,7 @@ class StokesTemplate():
             else:
                 S = self.B @ self.Apre @ self.B.T
 
-            evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-14))
+            evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-10))
             # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=ngs.IdentityMatrix(S.height), tol=1e-14))
             evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
 
