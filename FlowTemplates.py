@@ -19,7 +19,7 @@ except:
     _ngs_petsc = False
 
 # _ngs_petsc = False
-    
+
 ### Misc Utilities ###
 class CVADD (ngs.BaseMatrix):
     def __init__(self, M, Mcv):
@@ -80,22 +80,16 @@ class SPCST (ngs.BaseMatrix):
     def MultTrans(self, b, x):
         self.Mult(b, x)
     def Mult(self, b, x):
-        x[:] = 0
+        x[:] = 0.0
         if self.swr: # Forward smoothing - update residual
             self.res.data = b
-            self.S.SmoothK(self.steps, x, b, self.res, True, True, True)            
+            self.S.SmoothK(self.steps, x, b, self.res, True, True, True)
         else:
             for l in range(self.steps):
                 self.S.Smooth(x, b)
             self.res.data = b - self.A * x
-
-        # self.xtemp.data = self.emb_pc * self.res
-        # x.data += 1/1.4*self.xtemp
-        # x.data += self.xtemp
-
         if self.pc is not None:
             self.emb_pc.MultAdd(1.0, self.res, x)
-
         if self.swr: # Backward smoothing - no need to update residual
             self.S.SmoothBackK(self.steps, x, b, self.res, False, False, False)
         else:
@@ -533,7 +527,7 @@ class StokesTemplate():
                 else:
                     self.c = None
 
-                self._to_assemble += [ self.a, self.a2, self.b, self.c ]
+                self._to_assemble += [ self.a, self.b, self.c ]
 
             else:
                 if self.elint:
@@ -754,18 +748,6 @@ class StokesTemplate():
                 a_aux.Assemble()
                 aux_pre = a_aux.mat.Inverse(V.FreeDofs(), inverse="mumps" if ngs.mpi_world.size>1 else "sparsecholesky")
 
-            # aux_pre = ngs.la.LoggingMatrix(aux_pre, "aux_pre")
-            # print("aux free ", sum(V.FreeDofs()), len(V.FreeDofs()))
-            # evs_Aa = list(ngs.la.EigenValues_Preconditioner(mat=a_aux.mat, pre=aux_pre, tol=1e-10))
-            # # evs_Aa = list(ngs.la.EigenValues_Preconditioner(mat=a_aux.mat, pre=ngs.Projector(V.FreeDofs(), True), tol=1e-10))
-            # if self.a.space.mesh.comm.rank == 0:
-            #     print("\n----")
-            #     print("EVs for A in aux space")
-            #     print("min ev. preAa\Aa:", evs_Aa[:5])
-            #     print("max ev. preAa\Aa:", evs_Aa[-5:])
-            #     print("cond-nr preAa\Aa:", evs_Aa[-1]/evs_Aa[0])
-            #     print("----")
-
 
             # Embeddig Auxiliary space -> MCS space
             emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = True, parmat = False, bonus_intorder_ab = 2,
@@ -828,13 +810,20 @@ class StokesTemplate():
                         sm_symm = sm_symm or sm_symm_loc
                     if blk_smoother:
                         smoother = ngs_amg.CreateHybridBlockGSS(mat = self.a.mat, blocks = sm_blocks, shm = False,#ngs.mpi_world.size == 1,
-                                                                mpi_overlap = True, mpi_thread = False,
+                                                                mpi_overlap = True, mpi_thread = False, pinv = False,
                                                                 bs2 = True, blocks_no = False,
                                                                 nsteps = sm_nsteps, symm = sm_symm,
                                                                 nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
                     else:
-                        smoother = ngs_amg.CreateHybridGSS(mat = self.a.mat, freedofs = x_free, mpi_overlap = True, mpi_thread = True)
+                        if False:
+                            smoother = ngs_amg.CreateHybridDISmoother(mat=self.a.mat, freedofs=x_free, mpi_overlap=False, mpi_thread=False,
+                                                                      symm=False, nsteps=1)
+                        else:
+                            smoother = ngs_amg.CreateHybridGSS(mat = self.a.mat, freedofs = x_free, mpi_overlap = True, mpi_thread = True,
+                                                               nsteps = sm_nsteps, symm = sm_symm, pinv = False,
+                                                               nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
                     self.Apre = SPCST(smoother = smoother, mat = self.a.mat, pc = aux_pre, emb = embA, swr = True, steps = 1)
+                    # self.Apre = SymSM(self.a.mat, smoother, swr=True)
                 elif ngs.mpi_world.size == 1:
                     if blk_smoother:
                         smoother = self.a.mat.local_mat.CreateBlockSmoother(sm_blocks)
@@ -930,6 +919,7 @@ class StokesTemplate():
                 print("min ev. preA\A:", evs_A[:5])
                 print("max ev. preA\A:", evs_A[-5:])
                 print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
+            # quit()
             
             if exai:
                 if self.elint:
