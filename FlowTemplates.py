@@ -386,9 +386,9 @@ class HDG(FlowDiscretization):
         self.V = ngs.HDiv(settings.mesh, order = self.order, RT = False, hodivfree = self.hodivfree, \
                           dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.wall_slip, \
                           definedon = self.settings.fluid_domain)
-        self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
+        self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order, \
                                                dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet, \
-                                               definedon = self.settings.fluid_domain)
+                                               definedon = self.settings.fluid_domain, highest_order_dc = True)
         self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order-1, \
                         definedon = self.settings.fluid_domain)
 
