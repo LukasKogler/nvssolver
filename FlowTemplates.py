@@ -290,23 +290,243 @@ class FlowOptions:
         
 ### END FlowOptions ###
 
-
-### MCS Discretization ###
-
-class MCS:
-    def __init__(self, settings = None, order = 2, RT = False, hodivfree = False, compress = True, truecompile = False, \
-                 pq_reg = 0, divdivpen = 0, trace_sigma = False):
-
+### FlowDiscretization ###
+class FlowDiscretization:
+    def __init__(self, settings = None, order = 2, compress = True, truecompile = False, \
+                 pq_reg = 0, divdivpen = 0, bonus_intorder_rhs = 0):
         self.settings = settings
         self.order = order
-        self.RT = RT
-        self.hodivfree = hodivfree
         self.compress = compress
-        self.sym = settings.sym
         self.truecompile = truecompile
         self.pq_reg = pq_reg
         self.ddp = divdivpen
+        self.bonus_intorder_rhs = bonus_intorder_rhs
+
+        self.sym = settings.sym
+
+        self.nueff = (2 * self.settings.nu) if self.settings.sym else self.settings.nu
+
+        self._stokesM = None
+        self._stokesA = None
+        self._stokesB = None
+        self._stokesBT = None
+        self._stokesBBT = None
+        self._stokesf = None
+        self._stokesC = None
+        
+    def Compile (self, term):
+        return term.Compile(realcompile = self.truecompile, wait = True)
+
+        
+    def stokesA(self):
+        if self._stokesA == None:
+            self._stokesA = self.Compile(self.a_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
+        return self._stokesA
+
+    def stokesB(self):
+        if self._stokesB == None:
+            self._stokesB = self.Compile(self.b_vol) * ngs.dx
+        return self._stokesB
+
+    def stokesBT(self):
+        if self._stokesB == None:
+            self._stokesB = self.Compile(self.bt_vol) * ngs.dx
+        return self._stokesB
+
+    def stokesC(self):
+        if self._stokesC == None and self.c_vol is not None:
+            self._stokesC = self.Compile(self.c_vol) * ngs.dx
+        return self._stokesC
+
+    def stokesBBT(self):
+        if self._stokesB == None:
+            if self.c_vol == None:
+                self._stokesB = self.Compile(self.b_vol + self.bt_vol) * ngs.dx
+            else:
+                self._stokesB = self.Compile(self.b_vol + self.bt_vol + self.c_vol) * ngs.dx
+        return self._stokesB
+
+    def stokesM(self):
+        if self._stokesM == None:
+            if self.c_vol == None:
+                self._stokesM = self.Compile(self.a_vol + self.b_vol + self.bt_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
+            else:
+                self._stokesM = self.Compile(self.a_vol + self.b_vol + self.bt_vol + self.c_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
+        return self._stokesM
+
+    def stokesf(self):
+        if self._stokesf == None and self.f_vol is not None:
+            self._stokesf = self.Compile(self.f_vol) * ngs.dx(bonus_intorder=self.bonus_intorder_rhs)
+            # self._stokesf = self.Compile(self.f_vol) * ngs.dx
+            # self._stokesf = self.f_vol * ngs.dx(bonus_intorder=self.bonus_intorder_rhs)
+        # self._stokesf = self.Compile(self.f_bnd) * ngs.ds
+        return self._stokesf
+    
+### END FlowDiscretization ###
+
+
+### HDG Discretization ###
+
+class HDG(FlowDiscretization):
+    def __init__(self, settings = None, order = 2, hodivfree = False, compress = True, truecompile = False, \
+                 pq_reg = 0, divdivpen = 0, bonus_intorder_rhs = 0, stab_alpha = 6.0):
+
+        super(HDG, self).__init__(settings, order, compress, truecompile, pq_reg, divdivpen, bonus_intorder_rhs)
+
+        self.hodivfree = hodivfree
+        self.alpha = stab_alpha
+
+        if not self.sym:
+            raise Exception("HDG with full grad not implemented! (need to remove W space)")
+
+        # for eps-eps order 1, take W/R in RT0 and add
+        self.WHDiv = self.sym and (self.order == 1)
+
+        # BDM
+        self.V = ngs.HDiv(settings.mesh, order = self.order, RT = False, hodivfree = self.hodivfree, \
+                          dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.wall_slip, \
+                          definedon = self.settings.fluid_domain)
+        self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
+                                               dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet, \
+                                               definedon = self.settings.fluid_domain)
+        self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order-1, \
+                        definedon = self.settings.fluid_domain)
+
+        if self.WHDiv:
+            self.W = ngs.HDiv(settings.mesh, order = 0, definedon = self.settings.fluid_domain,
+                              dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
+        else:
+            self.W = None
+    
+        if self.compress and self.settings.fluid_domain != ".*":
+                self.V = ngs.Compress(self.V)
+                self.Vhat = ngs.Compress(self.Vhat)
+                self.Q = ngs.Compress(self.Q)
+
+    def SetUpForms(self, compound = False):
+
+        self.dS = ngs.dx(element_vb = ngs.BND)
+
+        self.h = ngs.specialcf.mesh_size
+        self.n = ngs.specialcf.normal(self.settings.mesh.dim)
+        self.normal = lambda u : (u * self.n) * self.n
+        self.tang = lambda u : u - (u * self.n) * self.n
+        if self.settings.mesh.dim == 2:
+            self.Skew2Vec = lambda m :  m[1, 0] - m[0, 1]
+        else:
+            # then W = curl(u)
+            self.Skew2Vec = lambda m : -0.5 * ngs.CoefficientFunction( (m[1,2]-m[2,1], m[2,0]-m[0,2], m[0,1]-m[1,0]) )
+        self.Eps  = lambda u : 0.5 * (ngs.Grad(u) + ngs.Grad(u).trans)
+        self.Curl = lambda u : ngs.CoefficientFunction( (ngs.Grad(u)[2,1]-ngs.Grad(u)[1,2], \
+                                                         ngs.Grad(u)[0,2]-ngs.Grad(u)[2,0], \
+                                                         ngs.Grad(u)[1,0]-ngs.Grad(u)[0,1]) )
+
+        if self.sym:
+            self.X = ngs.ProductSpace(self.V, self.Vhat, self.W)
+        else:
+            self.X = ngs.ProductSpace(self.V, self.Vhat)
+
+        if compound:
+            self.Xext = ngs.ProductSpace(self.X, self.Q)
+            if self.WHDiv:
+                (u, uhat, W), p = self.Xext.TrialFunction()
+                (v, vhat, R), q = self.Xext.TestFunction()
+            else:
+                (u, uhat), p = self.Xext.TrialFunction()
+                (v, vhat), q = self.Xext.TestFunction()
+        else:
+            self.Xext = None
+            if self.WHDiv:
+                u, uhat, omega = self.X.TrialFunction()
+                v, vhat, eta = self.X.TestFunction()
+            else:
+                u, uhat = self.X.TrialFunction()
+                v, vhat = self.X.TestFunction()
+            p,q = self.Q.TnT()
+
+        Du = self.Eps(u) if self.sym else ngs.Grad(u)
+        Dv = self.Eps(v) if self.sym else ngs.Grad(v)
+        self.a_vol = self.nueff * ngs.InnerProduct(Du,Dv)
+        self.a_bnd = self.nueff * ( self.alpha/self.h *  ngs.InnerProduct(self.tang(uhat-u), self.tang(vhat-v)) \
+                                    + ngs.InnerProduct(Du * self.n, self.tang(vhat-v)) \
+                                    + ngs.InnerProduct(Dv * self.n, self.tang(uhat-u)) )
+        if self.WHDiv:
+            self.a_bnd += self.nueff * self.h *  ngs.InnerProduct( (self.Curl(u) - omega) * self.n , (self.Curl(v) - eta) * self.n )
+        if self.settings.l2_coef is not None:
+            slef.a_vol += self.settings.l2_coef * u * v * dx
+        self.b_vol = ngs.div(u) * q
+        self.bt_vol = ngs.div(v) * p
+        self.divdiv = ngs.div(u) * ngs.div(v)
+        self.uv = ngs.InnerProduct(u, v)
+        self.uhvh = ngs.InnerProduct(self.tang(uhat), self.tang(vhat))
+
+        if self.pq_reg != 0:
+            self.c_vol = -self.pq_reg * p * q
+        else:
+            self.c_vol = None
+
+        if self.settings.vol_force is not None:
+            self.f_vol = self.settings.vol_force * v
+        else:
+            self.f_vol = None
+
+        # self.f_bnd = self.settings.uin * v
+        self._mass_int = u*v*ngs.dx + self.h * uhat*vhat*self.dS
+
+    # utility
+    def XMass(self):
+        return self._mass_int
+
+    def GetPhysicalQuantities(self, gfs):
+        if type(gfs) != list:  # ( (V,Vh,W), Q ) ->  (V,Vh,W), Q
+            return self.GetPhysicalQuantities(gfs.components[0], gfs.components[1])
+        gfu = gfs[0]
+        gfp = gfs[1]
+        vel = gfu.components[0]
+        vh = gfu.components[1]
+        sigma = None
+        eta = gfu.components[2] if self.sym else None
+        p = gfp
+        return vel, vh, sigma, eta, p
+    
+    def H1AEmbedding(self, V, elint):
+        emb0 = ngs.comp.ConvertOperator(spacea = V, spaceb = self.V, \
+                                        range_dofs = self.V.FreeDofs(elint), \
+                                        localop = True, parmat = False, bonus_intorder_ab = 2)
+        tc0 = self.X.Embedding(0).local_mat
+        emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = self.Vhat, \
+                                        range_dofs = self.Vhat.FreeDofs(elint), \
+                                        localop = True, parmat = False, bonus_intorder_ab = 2)
+        tc1 = self.X.Embedding(1).local_mat
+        embA = tc0 @ emb0 + tc1 @ emb1
+        if self.WHDiv:
+            emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = self.W, trial_cf = self.Curl(V.TrialFunction()), \
+                                            range_dofs = self.W.FreeDofs(elint), localop = True, \
+                                            parmat = False, bonus_intorder_ab = 2)
+            tc2 = self.X.Embedding(2).local_mat
+            embA = embA + tc2 @ emb2
+        if V.mesh.comm.size > 1:
+            embA = ngs.ParallelMatrix(embA, row_pardofs = V.ParallelDofs(), col_pardofs = self.X.ParallelDofs(), \
+                                      op = ngs.ParallelMatrix.C2C)
+        return embA
+
+### END HDG Discretization ###
+
+
+### MCS Discretization ###
+
+class MCS(FlowDiscretization):
+    def __init__(self, settings = None, order = 2, RT = False, hodivfree = False, compress = True, truecompile = False, \
+                 pq_reg = 0, divdivpen = 0, trace_sigma = False, bonus_intorder_rhs = 0):
+        super(MCS, self).__init__(settings, order, compress, truecompile, pq_reg, divdivpen, bonus_intorder_rhs)
+
+        self.hodivfree = hodivfree
+        self.RT = RT
         self.trace_sigma = trace_sigma
+
+        # for eps-eps order 1, take W/R in RT0 and add
+        # h**2 div(W)*div(R) to the BLF to achieve stability
+        self.WHDiv = self.sym and (self.order == 1)
 
         # Spaces
         self.V = ngs.HDiv(settings.mesh, order = self.order, RT = self.RT, hodivfree = self.hodivfree, \
@@ -348,32 +568,30 @@ class MCS:
                             definedon = self.settings.fluid_domain)
 
         if self.sym:
-            if settings.mesh.dim == 2:
-                self.S = ngs.L2(settings.mesh, order=self.order if self.RT else order-1, \
-                            definedon = self.settings.fluid_domain)
+            if self.WHDiv:
+                self.W = ngs.HDiv(settings.mesh, order = 0, definedon = self.settings.fluid_domain,
+                                  dirichlet = settings.inlet + "|" + settings.wall_noslip)
             else:
-                self.S = ngs.VectorL2(settings.mesh, order=self.order if self.RT else order-1, \
-                            definedon = self.settings.fluid_domain)
+                if settings.mesh.dim == 2:
+                    self.W = ngs.L2(settings.mesh, order=self.order if self.RT else order-1, \
+                                definedon = self.settings.fluid_domain)
+                else:
+                    self.W = ngs.VectorL2(settings.mesh, order=self.order if self.RT else order-1, \
+                                definedon = self.settings.fluid_domain)
         else:
-            self.S = None
+            self.W = None
 
         if self.compress:
             self.Sigma.SetCouplingType(ngs.IntRange(0, self.Sigma.ndof), ngs.COUPLING_TYPE.HIDDEN_DOF)
             self.Sigma = ngs.Compress(self.Sigma)
-            if self.sym:
-                self.S.SetCouplingType(ngs.IntRange(0, self.S.ndof), ngs.COUPLING_TYPE.HIDDEN_DOF)
-                self.S = ngs.Compress(self.S)
+            if self.sym and not self.WHDiv:
+                self.W.SetCouplingType(ngs.IntRange(0, self.W.ndof), ngs.COUPLING_TYPE.HIDDEN_DOF)
+                self.W = ngs.Compress(self.W)
             if self.settings.fluid_domain != ".*":
                 self.V = ngs.Compress(self.V)
                 self.Vhat = ngs.Compress(self.Vhat)
                 self.Q = ngs.Compress(self.Q)
-        
-                
 
-    def Compile (self, term):
-        return term.Compile(realcompile = self.truecompile, wait = True)
-
-    
     def SetUpForms(self, compound = False):
 
         self.dS = ngs.dx(element_vb = ngs.BND)
@@ -385,10 +603,15 @@ class MCS:
         if self.settings.mesh.dim == 2:
             self.Skew2Vec = lambda m :  m[1, 0] - m[0, 1]
         else:
-            self.Skew2Vec = lambda m : ngs.CoefficientFunction((m[0, 1] - m[1, 0], m[2, 0] - m[0, 2], m[1, 2] - m[2, 1]))
+            # then W = curl(u)
+            self.Skew2Vec = lambda m : -0.5 * ngs.CoefficientFunction( (m[1,2]-m[2,1], m[2,0]-m[0,2], m[0,1]-m[1,0]) )
+        self.Eps  = lambda u : 0.5 * (ngs.Grad(u) + ngs.Grad(u).trans)
+        self.Curl = lambda u : ngs.CoefficientFunction( (ngs.Grad(u)[2,1]-ngs.Grad(u)[1,2], \
+                                                         ngs.Grad(u)[0,2]-ngs.Grad(u)[2,0], \
+                                                         ngs.Grad(u)[1,0]-ngs.Grad(u)[0,1]) )
 
         if self.sym:
-            self.X = ngs.ProductSpace(self.V, self.Vhat, self.Sigma, self.S)
+            self.X = ngs.ProductSpace(self.V, self.Vhat, self.Sigma, self.W)
         else:
             self.X = ngs.ProductSpace(self.V, self.Vhat, self.Sigma)
 
@@ -405,31 +628,34 @@ class MCS:
             if self.sym:
                 u, uhat, sigma, W = self.X.TrialFunction()
                 v, vhat, tau, R = self.X.TestFunction()
-                # this way W, R scale like sigma, tau (for numerical stability) 
-                W = 1/self.h**self.settings.mesh.dim * W
-                R = 1/self.h**self.settings.mesh.dim * R
+                if False:
+                    # this way W, R scale like sigma, tau (for numerical stability) 
+                    W = 1/self.h**self.settings.mesh.dim * W
+                    R = 1/self.h**self.settings.mesh.dim * R
             else:
                 u, uhat, sigma = self.X.TrialFunction()
                 v, vhat, tau = self.X.TestFunction()
             p,q = self.Q.TnT()
 
-        nu = (2 * self.settings.nu) if self.settings.sym else self.settings.nu
-        self.nueff = nu
-        self.a_vol = -1.0 / nu * ngs.InnerProduct(sigma, tau) \
+        self.a_vol = -1.0 / self.nueff * ngs.InnerProduct(sigma, tau) \
                      + ngs.div(sigma) * v \
                      + ngs.div(tau) * u
         if self.ddp != 0.0:
-            self.a_vol += self.ddp * nu * ngs.div(u)*ngs.div(v)
+            self.a_vol += self.ddp * self.nueff * ngs.div(u)*ngs.div(v)
         if not self.trace_sigma:
-            self.a_vol += 1.0/self.settings.mesh.dim * nu * ngs.div(u) * ngs.div(v)
+            self.a_vol += 1.0/self.settings.mesh.dim * self.nueff * ngs.div(u) * ngs.div(v)
         if self.sym:
            self.a_vol += ngs.InnerProduct(W, self.Skew2Vec(tau)) \
                          + ngs.InnerProduct(R, self.Skew2Vec(sigma))
+           # makes the formulation stable for order 1
+           if self.WHDiv:
+               self.a_vol += self.nueff * self.h**2 * ngs.div(W) * ngs.div(R)
         self.a_bnd = - ((sigma * self.n) * self.n) * (v * self.n) \
                        - ((tau * self.n) * self.n) * (u * self.n) \
                        - (sigma * self.n) * self.tang(vhat) \
                        - (tau * self.n) * self.tang(uhat)
         if self.settings.l2_coef is not None:
+            raise Exception("Sorry, not sure l2 coef is implemented correctly???")
             self.a_vol += self.settings.l2_coef * ngs.InnerProduct(u, v)
             self.a_bnd += self.settings.l2_coef * ngs.InnerProduct(self.tang(uhat), self.tang(vhat))
         self.b_vol = ngs.div(u) * q
@@ -441,7 +667,7 @@ class MCS:
         self.uhvh = ngs.InnerProduct(self.tang(uhat), self.tang(vhat))
 
         if self.pq_reg != 0:
-            self.c_vol = -self.pq_reg * nu * p * q
+            self.c_vol = -self.pq_reg * p * q
         else:
             self.c_vol = None
 
@@ -453,58 +679,51 @@ class MCS:
         # self.f_bnd = self.settings.uin * v
         self._mass_int = u*v*ngs.dx + self.h * uhat*vhat*self.dS + ngs.InnerProduct(sigma, tau) * ngs.dx
 
-        self._stokesM = None
-        self._stokesA = None
-        self._stokesB = None
-        self._stokesBT = None
-        self._stokesBBT = None
-        self._stokesf = None
-        self._stokesC = None
-        
+    # utility
     def XMass(self):
         return self._mass_int
+
+    def GetPhysicalQuantities(self, gfs):
+        if type(gfs) != list:  # ( (V,Vh,S,W), Q ) ->  (V,Vh,S,W), Q
+            return self.GetPhysicalQuantities(gfs.components[0], gfs.components[1])
+        gfu = gfs[0]
+        gfp = gfs[1]
+        vel = gfu.components[0]
+        vh = gfu.components[0]
+        sigma = gfu.components[2]
+        eta = gfu.components[3] if self.sym else None
+        p = gfp
+        return vel, vh, sigma, eta, p
+
+    def H1AEmbedding(self, V, elint):
+        emb0 = ngs.comp.ConvertOperator(spacea = V, spaceb = self.V, \
+                                        range_dofs = self.V.FreeDofs(elint), \
+                                        localop = True, parmat = False, bonus_intorder_ab = 2)
+        tc0 = self.X.Embedding(0).local_mat
+        emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = self.Vhat, \
+                                        range_dofs = self.Vhat.FreeDofs(elint), \
+                                        localop = True, parmat = False, bonus_intorder_ab = 2)
+        tc1 = self.X.Embedding(1).local_mat
+        embA = tc0 @ emb0 + tc1 @ emb1
+        if not self.compress:
+            sig = -self.nueff * self.Eps(V.TrialFunction())
+            emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = self.Sigma, trial_cf = sig, \
+                                            range_dofs = self.Sigma.FreeDofs(elint), \
+                                            localop = True, parmat = False, bonus_intorder_ab = 2)
+            tc2 = self.X.Embedding(2).local_mat
+            embA = embA + tc2 @ emb2
+        if self.WHDiv:
+            emb3 = ngs.comp.ConvertOperator(spacea = V, spaceb = self.W, trial_cf = self.Curl(V.TrialFunction()), \
+                                            range_dofs = self.W.FreeDofs(elint), localop = True, \
+                                            parmat = False, bonus_intorder_ab = 2)
+            tc3 = self.X.Embedding(3).local_mat
+            embA = embA + tc3 @ emb3
+        if V.mesh.comm.size > 1:
+            embA = ngs.ParallelMatrix(embA, row_pardofs = V.ParallelDofs(), col_pardofs = self.X.ParallelDofs(), \
+                                      op = ngs.ParallelMatrix.C2C)
+        return embA
+
         
-    def stokesA(self):
-        if self._stokesA == None:
-            self._stokesA = self.Compile(self.a_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
-        return self._stokesA
-
-    def stokesB(self):
-        if self._stokesB == None:
-            self._stokesB = self.Compile(self.b_vol) * ngs.dx
-        return self._stokesB
-
-    def stokesBT(self):
-        if self._stokesB == None:
-            self._stokesB = self.Compile(self.bt_vol) * ngs.dx
-        return self._stokesB
-
-    def stokesC(self):
-        if self._stokesC == None and self.c_vol is not None:
-            self._stokesC = self.Compile(self.c_vol) * ngs.dx
-        return self._stokesC
-
-    def stokesBBT(self):
-        if self._stokesB == None:
-            if self.c_vol == None:
-                self._stokesB = self.Compile(self.b_vol + self.bt_vol) * ngs.dx
-            else:
-                self._stokesB = self.Compile(self.b_vol + self.bt_vol + self.c_vol) * ngs.dx
-        return self._stokesB
-
-    def stokesM(self):
-        if self._stokesM == None:
-            if self.c_vol == None:
-                self._stokesM = self.Compile(self.a_vol + self.b_vol + self.bt_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
-            else:
-                self._stokesM = self.Compile(self.a_vol + self.b_vol + self.bt_vol + self.c_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
-        return self._stokesM
-
-    def stokesf(self):
-        if self._stokesf == None and self.f_vol is not None:
-            self._stokesf = self.Compile(self.f_vol) * ngs.dx
-        # self._stokesf = self.Compile(self.f_bnd) * ngs.ds
-        return self._stokesf
 
 ### END MCS Discretization ###
 
@@ -531,23 +750,21 @@ class StokesTemplate():
 
             self.pc_a_avail = { "direct"    : lambda astokes, opts : self.SetUpADirect(astokes, **opts),
                                 "auxh1"     : lambda astokes, opts : self.SetUpAAux(astokes, **opts),
-                                "stokesamg"     : lambda astokes, opts : self.SetUpStokesAMG(astokes, **opts), }
+                                "stokesamg" : lambda astokes, opts : self.SetUpStokesAMG(astokes, **opts), }
 
             stokes.disc.SetUpForms(compound = not self.block_la)
-            
+
             if self.block_la:
                 self.gfu = ngs.GridFunction(stokes.disc.X)
-                self.velocity = self.gfu.components[0]
-                self.velhat = self.gfu.components[1]
-                self.p = ngs.GridFunction(stokes.disc.Q)
-                self.pressure = self.p
-                self.sol_vec = ngs.BlockVector([self.gfu.vec,
-                                                self.pressure.vec])
+                self.gfp = ngs.GridFunction(stokes.disc.Q)
+                self.velocity, self.velhat, self.sigma, \
+                    self.eta, self.pressure = stokes.disc.GetPhysicalQuantities([self.gfu, self.gfp])
+                self.sol_vec = ngs.BlockVector([self.gfu.vec, \
+                                                self.gfp.vec])
             else:
                 self.gfu = ngs.GridFunction(stokes.disc.Xext)
-                self.velocity = self.gfu.components[0].components[0]
-                self.velhat = self.gfu.components[0].components[1]
-                self.pressure = self.gfu.components[1]
+                self.velocity, self.velhat, self.sigma, \
+                    self.eta, self.pressure = stokes.disc.GetPhysicalQuantities(self.gfu)
                 self.sol_vec = self.gfu.vec
             
             self._to_assemble = []
@@ -614,7 +831,7 @@ class StokesTemplate():
                 self.a += stokes.disc.stokesA()
                 # self.a += 1e2 * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
 
-                if stokes.disc.ddp != 0:
+                if False and stokes.disc.ddp != 0: # ddp is now in a_vol already
                     u, uhat, sigma = stokes.disc.X.TrialFunction()
                     v, vhat, tau = stokes.disc.X.TestFunction()
                     self.a2 = ngs.BilinearForm(stokes.disc.X, condense = self.elint, eliminate_hidden = stokes.disc.compress, \
@@ -623,7 +840,7 @@ class StokesTemplate():
                     self.a2 += stokes.disc.ddp * stokes.settings.nu * stokes.disc.divdiv * ngs.dx
                     # what is thjis... this does not even make sense, it needs a surface-int
                     # self.a2 += 1e2/stokes.disc.h * stokes.settings.nu * ngs.InnerProduct(stokes.disc.normal(u), stokes.disc.normal(v)) * ngs.dx
-                    self._to_assemble += [ self.a2  ]
+                    self._to_assemble += [ ("a2", self.a2)  ]
                 else:
                     self.a2 = self.a
                 # self.a2 += 1e-4 * stokes.settings.nu * stokes.disc.uv * ngs.dx
@@ -640,23 +857,22 @@ class StokesTemplate():
                 else:
                     self.c = None
 
-                self._to_assemble += [ self.a, self.b, self.c ]
+                self._to_assemble += [ ("a",self.a), ("b",self.b), ("c",self.c) ]
 
-                if stokes.settings.sym:
-                    u, uhat, _, _ = stokes.disc.X.TrialFunction()
-                    v, vhat, _, _ = stokes.disc.X.TestFunction()
-                else:
-                    u, uhat, _ = stokes.disc.X.TrialFunction()
-                    v, vhat, _ = stokes.disc.X.TestFunction()
-                self.rblf_x = ngs.BilinearForm(stokes.disc.X)
-                self.rblf_x += ngs.InnerProduct(u,v) * ngs.dx
-                self.rblf_x += 1/stokes.disc.h * ngs.InnerProduct(uhat,vhat) * ngs.dx(element_vb=ngs.BND)
-                self._to_assemble.append(self.rblf_x)
-
-                p, q = stokes.disc.Q.TnT()
-                self.rblf_q = ngs.BilinearForm(stokes.disc.Q)
-                self.rblf_q += ngs.InnerProduct(p,q) * ngs.dx
-                self._to_assemble.append(self.rblf_q)
+                # if stokes.settings.sym:
+                #     u, uhat, _, _ = stokes.disc.X.TrialFunction()
+                #     v, vhat, _, _ = stokes.disc.X.TestFunction()
+                # else:
+                #     u, uhat, _ = stokes.disc.X.TrialFunction()
+                #     v, vhat, _ = stokes.disc.X.TestFunction()
+                # self.rblf_x = ngs.BilinearForm(stokes.disc.X)
+                # self.rblf_x += ngs.InnerProduct(u,v) * ngs.dx
+                # self.rblf_x += 1/stokes.disc.h * ngs.InnerProduct(uhat,vhat) * ngs.dx(element_vb=ngs.BND)
+                # self._to_assemble.append(self.rblf_x)
+                # p, q = stokes.disc.Q.TnT()
+                # self.rblf_q = ngs.BilinearForm(stokes.disc.Q)
+                # self.rblf_q += ngs.InnerProduct(p,q) * ngs.dx
+                # self._to_assemble.append(self.rblf_q)
 
             else:
                 if self.elint:
@@ -670,7 +886,7 @@ class StokesTemplate():
                                           tore_inner = self.elint and not self.it_on_sc)
                 self.m += stokes.disc.stokesM()
 
-                self._to_assemble += [ self.m ]
+                self._to_assemble += [ ("m", self.m) ]
                 self.a = self.m
                 self.a2 = self.m
                 
@@ -684,20 +900,32 @@ class StokesTemplate():
 
                 self.g = ngs.LinearForm(stokes.disc.Q)
 
-                self._to_assemble += [ self.f, self.g ]
+                self._to_assemble += [ ("f", self.f), ("g", self.g) ]
 
             else:
                 self.f = ngs.LinearForm(stokes.disc.Xext)
                 if stokes.disc.stokesf() is not None:
                     self.f += stokes.disc.stokesf()
 
-                self._to_assemble += [ self.f ]
+                self._to_assemble += [ ("F", self.f) ]
 
 
         def Assemble(self):
-            for x in self._to_assemble:
+            for name, x in self._to_assemble:
                 if x is not None:
+                    if ngs.mpi_world.rank == 0:
+                        print("\n===\nassemble {}\n===".format(name))
+                        sys.stdout.flush()
+                    t = ngs.Timer("assemble {}".format(name))
+                    x.space.mesh.comm.Barrier()
+                    t.Start()
                     x.Assemble()
+                    x.space.mesh.comm.Barrier()
+                    t.Stop()
+                    if ngs.mpi_world.rank == 0:
+                        print("\n===\nassembling {} took {} sec\n===".format(name, t.time))
+                        sys.stdout.flush()
+                    
 
         def PrepRHS(self, rhs_vec):
             if self.elint and self.it_on_sc:
@@ -847,18 +1075,53 @@ class StokesTemplate():
             # emb1 = ngs.comp.ConvertOperator(spacea = Vlo, spaceb = stokes.disc.V, localop = True, parmat = False, bonus_intorder_ab = 2,
             #                                 range_dofs = stokes.disc.V.FreeDofs(self.elint)) @ emb1
 
+            if ngs.mpi_world.rank == 0:
+                print("\n===\nCONVERT 0")
+                sys.stdout.flush()
 
-            emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = localop, parmat = False, bonus_intorder_ab = 2,
+            emb0 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.V, localop = localop, parmat = False, bonus_intorder_ab = 2,
                                             range_dofs = stokes.disc.V.FreeDofs(self.elint))
 
-            tc1 = stokes.disc.X.Embedding(0).local_mat
-            emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = localop, parmat = False, bonus_intorder_ab = 2,
+            tc0 = stokes.disc.X.Embedding(0).local_mat
+            if ngs.mpi_world.rank == 0:
+                print("\n===\nCONVERT 1")
+                sys.stdout.flush()
+            emb1 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Vhat, localop = localop, parmat = False, bonus_intorder_ab = 2,
                                             range_dofs = stokes.disc.Vhat.FreeDofs(self.elint))
-            tc2 = stokes.disc.X.Embedding(1).local_mat
-            embA = tc1 @ emb1 + tc2 @ emb2
-            if ngs.mpi_world.size > 1:
+            tc1 = stokes.disc.X.Embedding(1).local_mat
+            embA = tc0 @ emb0 + tc1 @ emb1
+
+            if not stokes.disc.compress:
+                G2E = lambda G : 0.5 * (G + G.trans)
+                sig = -stokes.disc.nueff * G2E(ngs.Grad(V.TrialFunction()))
+                if ngs.mpi_world.rank == 0:
+                    print("\n===\nCONVERT 2")
+                    sys.stdout.flush()
+                emb2 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.Sigma, localop = True, parmat = False, bonus_intorder_ab = 2,
+                                                range_dofs = stokes.disc.Sigma.FreeDofs(self.elint), trial_cf = sig)
+                tc2 = stokes.disc.X.Embedding(2).local_mat
+                embA = embA + tc2 @ emb2
+            if stokes.disc.WHDiv:
+                n = ngs.specialcf.normal(3)
+                tang = lambda u : u - (u * n) * n
+                # Skew2Vec = lambda m : -0.5 * ngs.CoefficientFunction( (m[1,2]-m[2,1], m[2,0]-m[0,2], m[0,1]-m[1,0]) )
+                G2Cu = lambda G : ngs.CoefficientFunction( (G[2,1]-G[1,2], G[0,2]-G[2,0], G[1,0]-G[0,1]) )
+                # G2Cu = lambda G : - 2 * Skew2Vec(G)
+                cu = G2Cu(ngs.Grad(V.TrialFunction()))
+                # V is H1, so curl is in HDiv -> localop=True and C2C is fine!
+                if ngs.mpi_world.rank == 0:
+                    print("\n===\nCONVERT 3")
+                    sys.stdout.flush()
+                emb3 = ngs.comp.ConvertOperator(spacea = V, spaceb = stokes.disc.S, localop = True, parmat = False, bonus_intorder_ab = 2,
+                                                range_dofs = stokes.disc.S.FreeDofs(self.elint), trial_cf = cu)
+                tc3 = stokes.disc.X.Embedding(3).local_mat
+                embA = embA + tc3 @ emb3
+            if V.mesh.comm.size > 1:
                 embA = ngs.ParallelMatrix(embA, row_pardofs = V.ParallelDofs(), col_pardofs = stokes.disc.X.ParallelDofs(),
                                           op = ngs.ParallelMatrix.C2C if localop else ngs.ParallelMatrix.C2D)
+            if ngs.mpi_world.rank == 0:
+                print("\n===\nCONVERT DONE")
+                sys.stdout.flush()
             # embA = ngs.la.LoggingMatrix(embA, "par embA")
             if allops:
                 return embA, tc1@emb1, tc2@emb2
@@ -866,7 +1129,7 @@ class StokesTemplate():
                 return embA
             
         def SetUpAAux (self, stokes, amg_package = "petsc", amg_opts = dict(), mpi_thrad = False, mpi_overlap = False, shm = None,
-                       bsblocks = None, multiplicative = True, sm_el_blocks = False, mlt_smoother = True, blk_smoother = True,
+                       multiplicative = True, sm_el_blocks = False, mlt_smoother = True, blk_smoother = True,
                        sm_nsteps = 1, sm_symm = False, sm_nsteps_loc = 1, sm_symm_loc = False, **kwargs):
             if stokes.disc.hodivfree:
                 raise Exception("Sorry, Auxiliary space not available with hodivfree (dual shapes not implemented) !")
@@ -898,6 +1161,21 @@ class StokesTemplate():
                 if callable(val):
                     amg_opts[opt] = val(V)
                     
+            t = ngs.Timer("assemble AUX")
+            a_aux.space.mesh.comm.Barrier()
+            t.Start()
+            a_aux.Assemble()
+            a_aux.space.mesh.comm.Barrier()
+            t.Stop()
+            if ngs.mpi_world.rank == 0:
+                print("\n===\nassembling NOPC AUX SPACE took {} sec\n===".format(t.time))
+                sys.stdout.flush()
+                    
+                    
+            t = ngs.Timer("assemble AUX")
+            a_aux.space.mesh.comm.Barrier()
+            t.Start()
+                    
             if not aux_direct:
                 if not use_petsc:
                     if stokes.settings.sym:
@@ -914,11 +1192,18 @@ class StokesTemplate():
                     aux_pre = petsc.PETSc2NGsPrecond(mat=mat_convert, name="aux_amg", petsc_options = amg_opts)
             else:
                 a_aux.Assemble()
-                aux_pre = a_aux.mat.Inverse(V.FreeDofs(), inverse="mumps" if ngs.mpi_world.size>1 else "sparsecholesky")
+                aux_pre = a_aux.mat.Inverse(V.FreeDofs(), inverse="mumps" if a_aux.space.mesh.comm.size>1 else "sparsecholesky")
+
+            a_aux.space.mesh.comm.Barrier()
+            t.Stop()
+            if ngs.mpi_world.rank == 0:
+                print("\n===\nassembling AUX SPACE took {} sec\n===".format(t.time))
+                sys.stdout.flush()
 
             # Embeddig Auxiliary space -> MCS space
-            embA = self.AuxToMCSEmbedding(stokes, V)
-                
+            # embA = self.AuxToMCSEmbedding(stokes, V)
+            embA = stokes.disc.H1AEmbedding(V, self.elint)
+
             # Block-Smoother to combine with auxiliary PC    
             if mlt_smoother and V.mesh.comm.size>1 and not _ngs_amg:
                 raise Exception("MPI-parallel multiplicative block-smoothers only available with NgsMPI!")
@@ -960,7 +1245,7 @@ class StokesTemplate():
                                 if len(block):
                                     sm_blocks.append(block)
                 if mlt_smoother:
-                    if ngs.mpi_world.size == 1:
+                    if a_aux.space.mesh.comm.size == 1:
                         if blk_smoother:
                             smoother = self.a.mat.local_mat.CreateBlockSmoother(sm_blocks)
                         else:
@@ -970,7 +1255,7 @@ class StokesTemplate():
                         raise Exception("Parallel Multiplicative block-smoothers only available with NgsAMG!")
                 else:
                     smoother = self.a.mat.local_mat.CreateBlockSmoother(blocks = sm_blocks, parallel=True)
-                    if ngs.mpi_world.size > 1:
+                    if a_aux.space.mesh.comm.size > 1:
                         # bsmoother = ngs.ParallelMatrix(bsmoother, self.a.mat.row_pardofs, self.a.mat.col_pardofs, ngs.ParallelMatrix.D2D)
                         # raise Exception("I think this does not work (anymore??)")
                         pass
@@ -1005,7 +1290,9 @@ class StokesTemplate():
             if True:
                 Vaux = ngs_amg.NoCoH1(stokes.settings.mesh, dim=stokes.settings.mesh.dim, \
                                       dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet,
-                                      dgjumps = dgj)
+                                      dgjumps = dgj, definedon=stokes.settings.fluid_domain)
+                if stokes.settings.fluid_domain != ".*":
+                    Vaux = ngs.Compress(Vaux)
             else:
                 Vaux = ngs.H1(stokes.settings.mesh, order = 1, dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet, \
                               dim = stokes.settings.mesh.dim)
@@ -1028,6 +1315,10 @@ class StokesTemplate():
                 a_aux += 30 * stokes.settings.nu/ngs.specialcf.mesh_size * ( ((u - u.Other())*n) * ((v - v.Other())*n) ) * ngs.dx(element_boundary=True)
             # a_aux += ngs.InnerProduct(u, v) * ngs.dx(element_boundary=True)
 
+            t = ngs.Timer("aux-assemble")
+            a_aux.space.mesh.comm.Barrier()
+            t.Start()
+
             if True:
                 amg_cl = ngs_amg.stokes_gg_2d if stokes.settings.mesh.dim == 2 else ngs_amg.stokes_gg_3d
                 for opt, val in amg_opts.items():
@@ -1043,7 +1334,12 @@ class StokesTemplate():
             else:
                 a_aux.Assemble()
                 aux_pre = a_aux.mat.Inverse(Vaux.FreeDofs(self.elint))
-
+            
+            Vaux.mesh.comm.Barrier()
+            t.Stop()
+            if ngs.mpi_world.rank == 0:
+                print("\n===\nassembling AUX SPACE (STOKES AMG) took {} sec\n===".format(t.time))
+                sys.stdout.flush()
             # emb_c = ngs.comp.ConvertOperator(spacea=Vaux, spaceb=Vc, localop=False)
             # embA = self.AuxToMCSEmbedding(stokes, Vc, True) @ emb_c
 
@@ -1061,12 +1357,12 @@ class StokesTemplate():
                 emb1 =  lo_ho @ aux_lo
                 tc1 = stokes.disc.X.Embedding(0).local_mat
                 embA = tc1 @ emb1.local_mat + emb2.local_mat
-                if ngs.mpi_world.size > 1:
+                if Vaux.mesh.comm.size > 1:
                     embA = ngs.ParallelMatrix(embA, row_pardofs = Vaux.ParallelDofs(), col_pardofs = stokes.disc.X.ParallelDofs(),
                                               op = ngs.ParallelMatrix.C2C)
            
             
-            print("embA\n", embA)
+            # print("embA\n", embA)
 
             # massa = ngs.BilinearForm(stokes.disc.XMass()).Assemble()
             # u, v = Vaux.TnT()
@@ -1106,7 +1402,7 @@ class StokesTemplate():
 
             
             if self.elint and not self.it_on_sc:
-                evs_AS = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.ASpre, tol=1e-14))
+                evs_AS = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.ASpre, tol=1e-8))
                 if self.a.space.mesh.comm.rank == 0:
                     print("--")
                     print("Block-PC Condition number test")
@@ -1114,8 +1410,8 @@ class StokesTemplate():
                     print("min ev. preA\A:", evs_AS[:5])
                     print("max ev. preA\A:", evs_AS[-5:])
                     print("cond-nr preA\A:", evs_AS[-1]/evs_AS[0])
-
-            evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=self.Apre, tol=1e-10))
+                    
+            evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=self.Apre, tol=1e-8))
             if self.a.space.mesh.comm.rank == 0:
                 print("\n----")
                 if not(self.elint and not self.it_on_sc):
@@ -1135,7 +1431,7 @@ class StokesTemplate():
             else:
                 S = self.B @ self.Apre @ self.B.T
 
-            evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-10))
+            evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-8))
             # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=ngs.IdentityMatrix(S.height), tol=1e-14))
             evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
 
@@ -1170,7 +1466,7 @@ class StokesTemplate():
             return evs_A[-1]/evs_A[0], evs_S[-1]/evs0, evs_A, evs_S
 
         
-    def __init__(self, flow_settings = None, flow_opts = None, disc = None, disc_opts = None, sol_opts = None):
+    def __init__(self, flow_settings = None, flow_opts = None, disc = None, disc_opts = {}, sol_opts = None):
 
         # mesh, geometry, physical parameters 
         if flow_settings is not None:
@@ -1181,18 +1477,28 @@ class StokesTemplate():
             raise Exception("need either flow_settings or flow_opts!")
 
         # spaces, forms
+        avail_discs = { "mcs" : lambda settings, kwa : MCS(settings=settings, **kwa),
+                        "hdg" : lambda settings, kwa : HDG(settings=settings, **kwa) }
         if disc is not None:
             self.disc = disc
-        elif disc_opts is not None:
-            self.disc = MCS(settings = self.settings, **disc_opts)
         else:
-            raise Exception("need either disc or disc_opts!")
+            if "disc_type" in disc_opts:
+                self.disc_type = disc_opts["disc_type"]
+                del disc_opts["disc_type"]
+            else:
+                self.disc_type = "mcs" # default
+            if self.disc_type in avail_discs:
+                self.disc = avail_discs[self.disc_type](self.settings, disc_opts)
+            else:
+                raise Exception("Discretization \"{}\" not available!!".format(self.disc_type))
 
         # linalg, preconditioner
         self.InitLinAlg(sol_opts)
 
         self.velocity = self.la.velocity
         self.velhat = self.la.velhat
+        self.sigma = self.la.sigma
+        self.eta = self.la.eta
         self.pressure = self.la.pressure
             
     def InitLinAlg(self, sol_opts = None):
