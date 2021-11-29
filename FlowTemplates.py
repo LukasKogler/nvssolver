@@ -265,7 +265,8 @@ class FlowOptions:
     A collection of parameters for Stokes/Navier-Stokes computations. Collects Boundary-conditions
     """
     def __init__(self, mesh, geom = None, nu = 1, inlet = "", outlet = "", wall_slip = "", wall_noslip = "",
-                 uin = None, symmetric = True, vol_force = None, l2_coef = None, fluid_domain = None):
+                 uin = None, symmetric = True, vol_force = None, l2_coef = None, fluid_domain = None,
+                 vel_outlet_f = None):
         # geom/mesh
         self.geom = geom
         self.mesh = mesh
@@ -274,6 +275,7 @@ class FlowOptions:
         self.nu = nu
         self.vol_force = vol_force
         self.l2_coef = l2_coef
+        self.vel_outlet_f = vel_outlet_f  # RHS for outlet: (sigma + p I)n = vel_outflow_f
 
         # domains
         self.fluid_domain = ".*" if fluid_domain is None else fluid_domain
@@ -355,8 +357,16 @@ class FlowDiscretization:
         return self._stokesM
 
     def stokesf(self):
-        if self._stokesf == None and self.f_vol is not None:
-            self._stokesf = self.Compile(self.f_vol) * ngs.dx(bonus_intorder=self.bonus_intorder_rhs)
+        if self._stokesf == None:
+            if self.f_vol is not None:
+                self._stokesf = self.Compile(self.f_vol) * ngs.dx(bonus_intorder=self.bonus_intorder_rhs)
+            if self.rhs_outlet is not None:
+                if self._stokesf == None:
+                    self._stokesf = self.Compile(self.rhs_outlet) * ngs.ds(bonus_intorder=self.bonus_intorder_rhs,
+                                                                           definedon=self.settings.outlet)
+                else:
+                    self._stokesf += self.Compile(self.rhs_outlet) * ngs.ds(bonus_intorder=self.bonus_intorder_rhs,
+                                                                            definedon=self.settings.outlet)
             # self._stokesf = self.Compile(self.f_vol) * ngs.dx
             # self._stokesf = self.f_vol * ngs.dx(bonus_intorder=self.bonus_intorder_rhs)
         # self._stokesf = self.Compile(self.f_bnd) * ngs.ds
@@ -369,12 +379,13 @@ class FlowDiscretization:
 
 class HDG(FlowDiscretization):
     def __init__(self, settings = None, order = 2, hodivfree = False, compress = True, truecompile = False, \
-                 pq_reg = 0, divdivpen = 0, bonus_intorder_rhs = 0, stab_alpha = 6.0):
+                 pq_reg = 0, divdivpen = 0, bonus_intorder_rhs = 0, stab_alpha = 6.0, vhat_outlet_diri = False):
 
         super(HDG, self).__init__(settings, order, compress, truecompile, pq_reg, divdivpen, bonus_intorder_rhs)
 
         self.hodivfree = hodivfree
         self.alpha = stab_alpha
+        self.vhat_outlet_diri = vhat_outlet_diri
 
         if not self.sym:
             raise Exception("HDG with full grad not implemented! (need to remove W space)")
@@ -386,9 +397,13 @@ class HDG(FlowDiscretization):
         self.V = ngs.HDiv(settings.mesh, order = self.order, RT = False, hodivfree = self.hodivfree, \
                           dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.wall_slip, \
                           definedon = self.settings.fluid_domain)
-        self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order, \
-                                               dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet, \
+
+        vh_diri = settings.inlet + "|" + settings.wall_noslip
+        if self.vhat_outlet_diri:
+            vh_diri = vh_diri + "|" + settings.outlet
+        self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order, dirichlet = vh_diri,
                                                definedon = self.settings.fluid_domain, highest_order_dc = True)
+
         self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order-1, \
                         definedon = self.settings.fluid_domain)
 
@@ -470,6 +485,11 @@ class HDG(FlowDiscretization):
         else:
             self.f_vol = None
 
+        if self.settings.vel_outlet_f is not None:
+            self.rhs_outlet = ngs.InnerProduct(self.settings.vel_outlet_f*self.n, v.Trace())
+        else:
+            self.rhs_outlet = None
+            
         # self.f_bnd = self.settings.uin * v
         self._mass_int = u*v*ngs.dx + self.h * uhat*vhat*self.dS
 
@@ -517,16 +537,22 @@ class HDG(FlowDiscretization):
 
 class MCS(FlowDiscretization):
     def __init__(self, settings = None, order = 2, RT = False, hodivfree = False, compress = True, truecompile = False, \
-                 pq_reg = 0, divdivpen = 0, trace_sigma = False, bonus_intorder_rhs = 0):
+                 pq_reg = 0, divdivpen = 0, trace_sigma = False, bonus_intorder_rhs = 0, vhat_outlet_diri = False):
         super(MCS, self).__init__(settings, order, compress, truecompile, pq_reg, divdivpen, bonus_intorder_rhs)
 
         self.hodivfree = hodivfree
         self.RT = RT
         self.trace_sigma = trace_sigma
+        self.vhat_outlet_diri = vhat_outlet_diri
 
         # for eps-eps order 1, take W/R in RT0 and add
         # h**2 div(W)*div(R) to the BLF to achieve stability
         self.WHDiv = self.sym and (self.order == 1)
+
+        # !! EITHER vhat=0 OR sigma_nt=0 on outlet!!
+        vh_diri = settings.inlet + "|" + settings.wall_noslip
+        if self.vhat_outlet_diri:
+            vh_diri = vh_diri + "|" + settings.outlet
 
         # Spaces
         self.V = ngs.HDiv(settings.mesh, order = self.order, RT = self.RT, hodivfree = self.hodivfree, \
@@ -534,13 +560,11 @@ class MCS(FlowDiscretization):
                           definedon = self.settings.fluid_domain)
         if self.RT:
             if True: # "correct" version
-                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, \
-                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet, \
-                          definedon = self.settings.fluid_domain)
+                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, dirichlet = vh_diri, \
+                                                       definedon = self.settings.fluid_domain)
             else: # not "correct", but works with facet-aux
-                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, \
-                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|", \
-                          definedon = self.settings.fluid_domain)
+                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = order, dirichlet = vh_diri, \
+                                                       definedon = self.settings.fluid_domain)
             self.Sigma = ngs.HCurlDiv(settings.mesh, order = order, GGBubbles = True, discontinuous = True, \
                                       ordertrace = self.order if self.trace_sigma else -1, \
                                       definedon = self.settings.fluid_domain)
@@ -552,13 +576,11 @@ class MCS(FlowDiscretization):
             if True: # "correct" version
                 # self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
                                                        # dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
-                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
-                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet, \
-                            definedon = self.settings.fluid_domain)
+                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, dirichlet = vh_diri, \
+                                                       definedon = self.settings.fluid_domain)
             else: # works with facet-aux
-                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
-                                                       dirichlet = settings.inlet + "|" + settings.wall_noslip, \
-                            definedon = self.settings.fluid_domain)
+                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, dirichlet = vh_diri, \
+                                                       definedon = self.settings.fluid_domain)
             self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, \
                                       discontinuous = True, ordertrace = self.order-1 if self.trace_sigma else -1, \
                                         definedon = self.settings.fluid_domain)
@@ -675,6 +697,11 @@ class MCS(FlowDiscretization):
             self.f_vol = self.settings.vol_force * v
         else:
             self.f_vol = None
+
+        if self.settings.vel_outlet_f is not None:
+            self.rhs_outlet = ngs.InnerProduct(self.settings.vel_outlet_f*self.n, v.Trace())
+        else:
+            self.rhs_outlet = None
 
         # self.f_bnd = self.settings.uin * v
         self._mass_int = u*v*ngs.dx + self.h * uhat*vhat*self.dS + ngs.InnerProduct(sigma, tau) * ngs.dx
