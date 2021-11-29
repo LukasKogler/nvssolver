@@ -266,7 +266,7 @@ class FlowOptions:
     """
     def __init__(self, mesh, geom = None, nu = 1, inlet = "", outlet = "", wall_slip = "", wall_noslip = "",
                  uin = None, symmetric = True, vol_force = None, l2_coef = None, fluid_domain = None,
-                 vel_outlet_f = None):
+                 vel_outlet_f = None, velhat_outlet_f = None):
         # geom/mesh
         self.geom = geom
         self.mesh = mesh
@@ -276,6 +276,7 @@ class FlowOptions:
         self.vol_force = vol_force
         self.l2_coef = l2_coef
         self.vel_outlet_f = vel_outlet_f  # RHS for outlet: (sigma + p I)n = vel_outflow_f
+        self.velhat_outlet_f = velhat_outlet_f  # RHS for outlet: (sigma + p I)n = vel_outflow_f
 
         # domains
         self.fluid_domain = ".*" if fluid_domain is None else fluid_domain
@@ -469,8 +470,8 @@ class HDG(FlowDiscretization):
             self.a_bnd += self.nueff * self.h *  ngs.InnerProduct( (self.Curl(u) - omega) * self.n , (self.Curl(v) - eta) * self.n )
         if self.settings.l2_coef is not None:
             slef.a_vol += self.settings.l2_coef * u * v * dx
-        self.b_vol = ngs.div(u) * q
-        self.bt_vol = ngs.div(v) * p
+        self.b_vol = -ngs.div(u) * q
+        self.bt_vol = -ngs.div(v) * p
         self.divdiv = ngs.div(u) * ngs.div(v)
         self.uv = ngs.InnerProduct(u, v)
         self.uhvh = ngs.InnerProduct(self.tang(uhat), self.tang(vhat))
@@ -485,10 +486,16 @@ class HDG(FlowDiscretization):
         else:
             self.f_vol = None
 
+        self.rhs_outlet = None
+
         if self.settings.vel_outlet_f is not None:
-            self.rhs_outlet = ngs.InnerProduct(self.settings.vel_outlet_f*self.n, v.Trace())
-        else:
-            self.rhs_outlet = None
+            self.rhs_outlet = ngs.InnerProduct(self.settings.vel_outlet_f, v.Trace())
+
+        if self.settings.vel_outlet_f is not None:
+            if self.rhs_outlet == None:
+                self.rhs_outlet  = ngs.InnerProduct(self.settings.velhat_outlet_f, vhat.Trace())
+            else:
+                self.rhs_outlet += ngs.InnerProduct(self.settings.velhat_outlet_f, vhat.Trace())
             
         # self.f_bnd = self.settings.uin * v
         self._mass_int = u*v*ngs.dx + self.h * uhat*vhat*self.dS
@@ -680,8 +687,8 @@ class MCS(FlowDiscretization):
             raise Exception("Sorry, not sure l2 coef is implemented correctly???")
             self.a_vol += self.settings.l2_coef * ngs.InnerProduct(u, v)
             self.a_bnd += self.settings.l2_coef * ngs.InnerProduct(self.tang(uhat), self.tang(vhat))
-        self.b_vol = ngs.div(u) * q
-        self.bt_vol = ngs.div(v) * p
+        self.b_vol = -ngs.div(u) * q
+        self.bt_vol = -ngs.div(v) * p
 
         # This is useful in some cases.
         self.divdiv = ngs.div(u) * ngs.div(v)
@@ -698,10 +705,16 @@ class MCS(FlowDiscretization):
         else:
             self.f_vol = None
 
+        self.rhs_outlet = None
+
         if self.settings.vel_outlet_f is not None:
-            self.rhs_outlet = ngs.InnerProduct(self.settings.vel_outlet_f*self.n, v.Trace())
-        else:
-            self.rhs_outlet = None
+            self.rhs_outlet = ngs.InnerProduct(self.settings.vel_outlet_f, v.Trace())
+
+        if self.settings.vel_outlet_f is not None:
+            if self.rhs_outlet == None:
+                self.rhs_outlet  = ngs.InnerProduct(self.settings.velhat_outlet_f, vhat.Trace())
+            else:
+                self.rhs_outlet += ngs.InnerProduct(self.settings.velhat_outlet_f, vhat.Trace())
 
         # self.f_bnd = self.settings.uin * v
         self._mass_int = u*v*ngs.dx + self.h * uhat*vhat*self.dS + ngs.InnerProduct(sigma, tau) * ngs.dx
