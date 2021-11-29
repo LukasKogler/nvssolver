@@ -1,3 +1,7 @@
+import pickle
+from ctypes import CDLL, RTLD_GLOBAL
+CDLL('/opt/ohpc/pub/intel/mkl/lib/intel64/libmkl_rt.so', RTLD_GLOBAL)
+
 from ngsolve import *
 import netgen.geom2d as g2d
 import netgen.csg as csg
@@ -25,8 +29,7 @@ ngsglobals.msg_level = 1
 #flow_settings = channel2d(maxh=0.2, nu=1e-3, L=40)
 #pqr = 0
 
-flow_settings = ST_3d(maxh=0.1, nu=1e-2)
-flow_settings.mesh.Curve(3)
+flow_settings = ST_3d(maxh=0.1, nu=1e-2, symmetric=True)
 pqr = 0
 
 # flow_settings = vortex2d(maxh=0.025, nu=1)
@@ -37,7 +40,7 @@ print("edges " , flow_settings.mesh.nedge)
 print("facets " , flow_settings.mesh.nfacet)
 print("els " , flow_settings.mesh.ne)
 
-disc_opts = { "order" : 2,
+disc_opts = { "order" : 1,
               "hodivfree" : False,
               "truecompile" : False, #mpi_world.size == 1,
               "RT" : False,
@@ -57,10 +60,15 @@ sol_opts = { "elint" : True,
                      # "type" : "auxfacet",
                      "type" : "auxh1", 
                      # "amg_package" : "petsc",
-                     #"amg_package" : "ngs_amg",
+                     # "amg_package" : "ngs_amg",
                      "amg_package" : "direct", # direct solve in auxiliary space
+                     "blk_smoother" : True,
                      "mlt_smoother" : True,
-                     "el_blocks" : True,
+                     # "sm_el_blocks" : False,
+                     "sm_nsteps" : 2,
+                     "mpi_thread" : True,
+                     "mpi_overlap" : True,
+                     "shm" : mpi_world.size==1,
                      # "type" : "stokesamg", 
                      "amg_opts" : {
                          "ngs_amg_max_coarse_size" : 2,
@@ -95,8 +103,8 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
     print("X1 ndof", sum(X.components[1].FreeDofs(True)))
     print("X  ndof", sum(X.FreeDofs(True)))
 
-    #if sol_opts["pc_ver"] == "block":
-    #    stokes.la.TestBlock()
+    if sol_opts["pc_ver"] == "block":
+       stokes.la.TestBlock()
 
     ts = Timer("solve")
     ts.Start()

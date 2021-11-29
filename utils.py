@@ -78,7 +78,7 @@ def gen_ref_mesh(geo, comm, maxh, nref = 0, mesh_file = "", load = False, save =
         else:
             ngmesh = geo.GenerateMesh(maxh=maxh)
             if save:
-                ngmesh.Save(mesh_file)
+                ngmesh.Save(mesh_file, False)
         # ngmesh.EnableTable("edges", False)
         # ngmesh.EnableTable("faces", False)
         if comm.size > 1:
