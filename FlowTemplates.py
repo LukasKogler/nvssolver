@@ -1549,7 +1549,8 @@ class StokesTemplate():
     def AssembleLinAlg(self):
         self.la.Assemble()
 
-    def Solve(self, tol = 1e-8, ms = 1000, rel_err = True, solver = "minres", presteps = 0, use_sz = False, printrates = None):
+    def Solve(self, tol = 1e-8, ms = 1000, rel_err = True, solver = "minres", presteps = 0, use_sz = False, printrates = None,
+              restart = 10000):
 
         pr = ngs.mpi_world.rank==0 if printrates is None else printrates
         
@@ -1614,7 +1615,7 @@ class StokesTemplate():
             else:
                 pc = self.la.Mpre
             gmres = GMResSolver(M = self.la.M, Mhat = pc, maxsteps=ms, tol=tol,
-                                printrates = pr, rel_err = rel_err, restart=10000, innerproduct = nip)
+                                printrates = pr, rel_err = rel_err, restart=restart, innerproduct = nip)
             # opts = {"ksp_type":"cg", "ksp_atol":1e-30, "ksp_rtol":1e-8,
             #         #"pc_view" : "",
             #         #"ksp_view" : "",
