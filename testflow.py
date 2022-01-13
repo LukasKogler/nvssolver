@@ -1,3 +1,13 @@
+import os, sys
+from ctypes import CDLL, RTLD_GLOBAL
+try:
+    CDLL(os.path.join(os.environ["MKLROOT"], "lib/intel64/libmkl_rt.so"), RTLD_GLOBAL)
+except:
+    try:
+        CDLL(os.path.join(os.environ["MKL_ROOT"], "lib/intel64/libmkl_rt.so"), RTLD_GLOBAL)
+    except:
+        pass
+
 from ngsolve import *
 import netgen.geom2d as g2d
 import netgen.csg as csg
@@ -25,7 +35,7 @@ ngsglobals.msg_level = 1
 #flow_settings = channel2d(maxh=0.2, nu=1e-3, L=40)
 #pqr = 0
 
-flow_settings = ST_3d(maxh=0.1, nu=1e-2)
+flow_settings = ST_3d(maxh=0.2, nu=1e-2)
 flow_settings.mesh.Curve(3)
 pqr = 0
 
@@ -36,6 +46,10 @@ print("verts " , flow_settings.mesh.nv)
 print("edges " , flow_settings.mesh.nedge)
 print("facets " , flow_settings.mesh.nfacet)
 print("els " , flow_settings.mesh.ne)
+
+# print("els " , mpi_world.Sum(flow_settings.mesh.ne))
+# quit()
+
 
 disc_opts = { "order" : 2,
               "hodivfree" : False,
@@ -59,8 +73,10 @@ sol_opts = { "elint" : True,
                      # "amg_package" : "petsc",
                      #"amg_package" : "ngs_amg",
                      "amg_package" : "direct", # direct solve in auxiliary space
-                     "mlt_smoother" : True,
-                     "el_blocks" : True,
+                     "aux_mlt" : True,
+                     "blk_smoother" : True,
+                     "sm_el_blocks" : False,
+                     "sm_nsteps" : 4,
                      # "type" : "stokesamg", 
                      "amg_opts" : {
                          "ngs_amg_max_coarse_size" : 2,
@@ -81,7 +97,7 @@ sol_opts = { "elint" : True,
              }
 }
 
-# SetNumThreads(1)
+SetNumThreads(1)
 with TaskManager(pajetrace = 50 * 2024 * 1024):
 
     tsup = Timer("solve")
@@ -95,15 +111,16 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
     print("X1 ndof", sum(X.components[1].FreeDofs(True)))
     print("X  ndof", sum(X.FreeDofs(True)))
 
-    #if sol_opts["pc_ver"] == "block":
-    #    stokes.la.TestBlock()
+    if sol_opts["pc_ver"] == "block":
+       stokes.la.TestBlock()
+
+    # quit()
 
     ts = Timer("solve")
     ts.Start()
-    nits = stokes.Solve(tol=1e-12, ms = 500, solver = "gmres", use_sz = True, rel_err = False)
+    nits = stokes.Solve(tol=1e-6, ms = 500, solver = "gmres", use_sz = True, rel_err = False)
     ts.Stop()
     #input()
-    '''
     if mpi_world.rank == 0:
         print("\n---\ntime setup", tsup.time)
         print("nits = ", nits)
@@ -121,6 +138,7 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
 
     sys.stdout.flush()
 
+    '''
     sol_opts["elint"] = False
     disc_opts["divdivpen"] = 0
     sol_opts["pc_ver"] = "direct"

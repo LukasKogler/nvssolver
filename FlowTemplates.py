@@ -46,7 +46,7 @@ class CVADD (ngs.BaseMatrix):
     def CreateRowVector(self):
         return self.Mcv.CreateRowVector()
     
-class CumulateOp(BaseMatrix):
+class CumulateOp (ngs.BaseMatrix):
     def __init__(self, M):
         super(CumulateOp, self).__init__()
         self.M = M
@@ -127,54 +127,53 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
         self.elint = elint
         self.freedofs = self.blf.space.FreeDofs(self.elint)
         self.swr = False
+        self.op = None
         self._block_makers = { "F"   : self.MakeFacetBlocks,    # facets
                                "C"   : self.MakeCellBlocks,     # cells
                                "F+C" : self.MakeFCBlocks,       # facets + appended cells
                                "EL"  : self.MakeElementBlocks } # elements
-        self.SetUp()
-        self.op = None
-    def SetUp(self):
-        self.smoother = self.BuildSmoother(sm_blocks, sm_nsteps, sm_nsteps_loc,
-                                      sm_symm, sm_symm_loc)
-        if multiplicative:
-            self.op = SPCST(smoother = smoother, mat = self.blf.mat, pc = self.aux_pre,
+        self.SetUpSmoother(sm_blocks, sm_nsteps, sm_nsteps_loc,
+                           sm_symm, sm_symm_loc)
+        self.Finalize()
+    def Finalize(self):
+        if self.multiplicative:
+            self.op = SPCST(smoother = self.smoother, mat = self.blf.mat, pc = self.aux_pre,
                             emb = self.embedding, swr = self.swr, steps = 1)
         else:
-            self.op = smoother + self.embedding @ self.aux_pre @ self.embedding.T
-    def BuildSmoother(self, sm_blocks, sm_nsteps, sm_nsteps_loc,
+            self.op = self.smoother + self.embedding @ self.aux_pre @ self.embedding.T
+    def SetUpSmoother(self, block_codes, sm_nsteps, sm_nsteps_loc,
                       sm_symm, sm_symm_loc):
-        blocks = self.CalcBlocks(sm_blocks)
+        sm_blocks = self.CalcBlocks(block_codes)
         if self.comm.size == 1:
             sm_nsteps = sm_nsteps_loc*sm_nsteps
             sm_symm = sm_symm or sm_symm_loc
-        if multiplicative: # multiplicative: smooth, AUX, moothback
+        if self.multiplicative: # multiplicative: smooth, AUX, moothback
             if _ngs_amg: # use MPI-parallel multiplicative smoothers from ngs_amg 
                 self.swr = True
                 if len(sm_blocks) == 0:
-                    smoother = ngs_amg.CreateHybridGSS(mat = self.blf.mat, freedofs = self.freedofs, mpi_overlap = True,
-                                                       mpi_thread = True, nsteps = sm_nsteps, symm = sm_symm, pinv = False,
-                                                       nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
-                else:
-                    blocks = self.CalcBlocks(sm_blocks)
-                    smoother = ngs_amg.CreateHybridBlockGSS(mat = self.blf.mat, blocks = blocks, shm = False, # new bs not shm-par!
-                                                            mpi_overlap = True, mpi_thread = False, pinv = False,
-                                                            bs2 = True, blocks_no = False,
-                                                            nsteps = sm_nsteps, symm = sm_symm,
+                    self.smoother = ngs_amg.CreateHybridGSS(mat = self.blf.mat, freedofs = self.freedofs, mpi_overlap = True,
+                                                            mpi_thread = True, nsteps = sm_nsteps, symm = sm_symm, pinv = False,
                                                             nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
+                else:
+                    self.smoother = ngs_amg.CreateHybridBlockGSS(mat = self.blf.mat, blocks = sm_blocks, shm = False, # new bs not shm-par!
+                                                                 mpi_overlap = True, mpi_thread = False, pinv = False,
+                                                                 bs2 = True, blocks_no = False,
+                                                                 nsteps = sm_nsteps, symm = sm_symm,
+                                                                 nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
             else: # shm-parallel multiplicative smoothers from NGSolve (no MPI)
                 self.swr = False
-                smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks)
+                self.smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks)
         else: # additive: smooth + AUX
-            if len(sm_blocks == 0):
-                smoother = self.blf.mat.CreateSmoother(x_free)
+            if len(sm_blocks) == 0:
+                self.smoother = self.blf.mat.CreateSmoother(x_free)
             else:
-                smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks, parallel=self.comm.size>1)
+                self.smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks, parallel=self.comm.size>1)
                 if self.comm.size > 1: # EVIL HACK to get this to work as a D->C operation
                     # ParallelMatrix calls mult with local mat and .local_vec
                     # input is distributed, output set to distributed
-                    smoother = ParallelMatrix(c, a.mat.row_pardofs, a.mat.row_pardofs, ParallelMatrix.D2D)
+                    self.smoother = ParallelMatrix(self.smoother, a.mat.row_pardofs, a.mat.row_pardofs, ParallelMatrix.D2D)
                     # cumulateop cumulates output vector
-                    smoother = CumulateOp(c)
+                    self.smoother = CumulateOp(self.smoother)
     def MakeFacetBlocks(self):
         blocks = []
         V = self.blf.space
@@ -1237,7 +1236,7 @@ class StokesTemplate():
                 return embA
             
         def SetUpAAux (self, stokes, amg_package = "petsc", amg_opts = dict(), mpi_thrad = False, mpi_overlap = False, shm = None,
-                       multiplicative = True, sm_el_blocks = False, mlt_smoother = True, blk_smoother = True,
+                       multiplicative = True, sm_el_blocks = False, aux_mlt = True, blk_smoother = True,
                        sm_nsteps = 1, sm_symm = False, sm_nsteps_loc = 1, sm_symm_loc = False, **kwargs):
             if stokes.disc.hodivfree:
                 raise Exception("Sorry, Auxiliary space not available with hodivfree (dual shapes not implemented) !")
@@ -1311,15 +1310,17 @@ class StokesTemplate():
             # embA = self.AuxToMCSEmbedding(stokes, V)
             embA = stokes.disc.H1AEmbedding(V, self.elint)
 
-            if mlt_smoother:
+            if aux_mlt:
                 if V.mesh.comm.size>1 and not _ngs_amg:
                     raise Exception("MPI-parallel multiplicative block-smoothers only available with NgsMPI!")
                 if sm_el_blocks:
                     raise Exception("multiplicative smoothing with element-blocks not availalbe with MPI!")
+            if V.mesh.comm.size>1 and blk_smoother and sm_el_blocks:
+                    raise Exception("element-blocks with MPI not implemented!")
 
             # Blocks for smoother to combine with auxiliary PC    
             if blk_smoother:
-                if V.mesh.comm.size>1 and mlt_smoother:
+                if V.mesh.comm.size==1 and sm_el_blocks:
                     sm_blocks = ["EL"]
                 else:
                     sm_blocks = ["F", "C"][0:1 if self.elint else 2]
@@ -1327,7 +1328,7 @@ class StokesTemplate():
                 sm_blocks = []
 
             # Auxiliary space PC (additive or multiplicative)
-            self.Apre = AuxiliarySpacePreconditioner(self.a, aux_pre, embA, sm_blocks, multiplicative=mlt_smoother,
+            self.Apre = AuxiliarySpacePreconditioner(self.a, aux_pre, embA, sm_blocks, multiplicative=aux_mlt,
                                                      sm_nsteps=sm_nsteps, sm_nsteps_loc=sm_nsteps_loc,
                                                      sm_symm=sm_symm, sm_symm_loc=sm_symm_loc, elint=self.elint)
             
