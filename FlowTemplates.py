@@ -117,7 +117,8 @@ class SPCST (ngs.BaseMatrix):
 
 class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
     def __init__(self, blf, aux_pre, embedding, sm_blocks = ["facet"], multiplicative = True,
-                 sm_nsteps = 1, sm_nsteps_loc = 1, sm_symm = False, sm_symm_loc = False, elint = False):
+                 sm_nsteps = 1, sm_nsteps_loc = 1, sm_symm = False, sm_symm_loc = False,
+                 elint = False, mpi_thread = True):
         super(AuxiliarySpacePreconditioner, self).__init__()
         self.multiplicative = multiplicative
         self.blf = blf
@@ -133,7 +134,7 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
                                "F+C" : self.MakeFCBlocks,       # facets + appended cells
                                "EL"  : self.MakeElementBlocks } # elements
         self.SetUpSmoother(sm_blocks, sm_nsteps, sm_nsteps_loc,
-                           sm_symm, sm_symm_loc)
+                           sm_symm, sm_symm_loc, mpi_thread)
         self.Finalize()
     def Finalize(self):
         if self.multiplicative:
@@ -142,7 +143,7 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
         else:
             self.op = self.smoother + self.embedding @ self.aux_pre @ self.embedding.T
     def SetUpSmoother(self, block_codes, sm_nsteps, sm_nsteps_loc,
-                      sm_symm, sm_symm_loc):
+                      sm_symm, sm_symm_loc, mpi_thread):
         sm_blocks = self.CalcBlocks(block_codes)
         if self.comm.size == 1:
             sm_nsteps = sm_nsteps_loc*sm_nsteps
@@ -152,11 +153,11 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
                 self.swr = True
                 if sm_blocks is None:
                     self.smoother = ngs_amg.CreateHybridGSS(mat = self.blf.mat, freedofs = self.freedofs, mpi_overlap = True,
-                                                            mpi_thread = True, nsteps = sm_nsteps, symm = sm_symm, pinv = False,
+                                                            mpi_thread = mpi_thread, nsteps = sm_nsteps, symm = sm_symm, pinv = False,
                                                             nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
                 else:
                     self.smoother = ngs_amg.CreateHybridBlockGSS(mat = self.blf.mat, blocks = sm_blocks, shm = False, # new bs not shm-par!
-                                                                 mpi_overlap = True, mpi_thread = False, pinv = False,
+                                                                 mpi_overlap = True, mpi_thread = mpi_thread, pinv = False,
                                                                  bs2 = True, blocks_no = False,
                                                                  nsteps = sm_nsteps, symm = sm_symm,
                                                                  nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
@@ -1249,7 +1250,7 @@ class StokesTemplate():
             
         def SetUpAAux (self, stokes, amg_package = "petsc", amg_opts = dict(), mpi_thrad = False, mpi_overlap = False, shm = None,
                        multiplicative = True, sm_el_blocks = False, aux_mlt = True, blk_smoother = True,
-                       sm_nsteps = 1, sm_symm = False, sm_nsteps_loc = 1, sm_symm_loc = False, **kwargs):
+                       sm_nsteps = 1, sm_symm = False, sm_nsteps_loc = 1, sm_symm_loc = False, sm_mpi_thread = True, **kwargs):
             if stokes.disc.hodivfree:
                 raise Exception("Sorry, Auxiliary space not available with hodivfree (dual shapes not implemented) !")
             use_petsc = amg_package == "petsc"
@@ -1342,7 +1343,8 @@ class StokesTemplate():
             # Auxiliary space PC (additive or multiplicative)
             self.Apre = AuxiliarySpacePreconditioner(self.a, aux_pre, embA, sm_blocks, multiplicative=aux_mlt,
                                                      sm_nsteps=sm_nsteps, sm_nsteps_loc=sm_nsteps_loc,
-                                                     sm_symm=sm_symm, sm_symm_loc=sm_symm_loc, elint=self.elint)
+                                                     sm_symm=sm_symm, sm_symm_loc=sm_symm_loc, elint=self.elint,
+                                                     mpi_thread = sm_mpi_thread)
             
            
             ## END SetUpAAux ##
