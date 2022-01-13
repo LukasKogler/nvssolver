@@ -150,7 +150,7 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
         if self.multiplicative: # multiplicative: smooth, AUX, moothback
             if _ngs_amg: # use MPI-parallel multiplicative smoothers from ngs_amg 
                 self.swr = True
-                if len(sm_blocks) == 0:
+                if sm_blocks is None:
                     self.smoother = ngs_amg.CreateHybridGSS(mat = self.blf.mat, freedofs = self.freedofs, mpi_overlap = True,
                                                             mpi_thread = True, nsteps = sm_nsteps, symm = sm_symm, pinv = False,
                                                             nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
@@ -162,16 +162,25 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
                                                                  nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
             else: # shm-parallel multiplicative smoothers from NGSolve (no MPI)
                 self.swr = False
-                self.smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks)
+                if sm_blocks is None:
+                    self.smoother = self.blf.mat.local_mat.CreateSmoother(self.freedofs)
+                else:
+                    self.smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks)
         else: # additive: smooth + AUX
-            if len(sm_blocks) == 0:
-                self.smoother = self.blf.mat.CreateSmoother(x_free)
+            if sm_blocks is None:
+                if comm.size > 1:
+                    # annoying - need to define a Preconditioner("local") BEFORE assemble...
+                    # need to work with a blocksmoother..
+                    raise Exception("this is annoying")
+                else:
+                    self.smoother = self.blf.mat.CreateSmoother(self.freedofs)
             else:
                 self.smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks, parallel=self.comm.size>1)
                 if self.comm.size > 1: # EVIL HACK to get this to work as a D->C operation
                     # ParallelMatrix calls mult with local mat and .local_vec
                     # input is distributed, output set to distributed
-                    self.smoother = ParallelMatrix(self.smoother, a.mat.row_pardofs, a.mat.row_pardofs, ParallelMatrix.D2D)
+                    self.smoother = ngs.ParallelMatrix(self.smoother, self.blf.mat.row_pardofs,
+                                                       self.blf.mat.row_pardofs, ngs.ParallelMatrix.D2D)
                     # cumulateop cumulates output vector
                     self.smoother = CumulateOp(self.smoother)
     def MakeFacetBlocks(self):
@@ -211,11 +220,14 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
                 blocks.append(block)
         return blocks
     def CalcBlocks(self, sm_blocks):
-        allblocks = []
-        for bt in sm_blocks:
-            if bt in self._block_makers:
-                allblocks += self._block_makers[bt]()
-        return allblocks
+        if len(sm_blocks) > 0:
+            allblocks = []
+            for bt in sm_blocks:
+                if bt in self._block_makers:
+                    allblocks += self._block_makers[bt]()
+            return allblocks
+        else:
+            return None        
     def IsComplex(self):
         return self.blf.mat.IsComplex()
     def Height(self):
