@@ -124,7 +124,8 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
         self.blf = blf
         self.aux_pre = aux_pre
         self.embedding = embedding
-        self.comm = self.blf.space.mesh.comm
+        print("mesh comm type ", type(self.blf.space.mesh.comm))
+        self.mpi_comm = self.blf.space.mesh.comm
         self.elint = elint
         self.freedofs = self.blf.space.FreeDofs(self.elint)
         self.swr = False
@@ -145,7 +146,7 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
     def SetUpSmoother(self, block_codes, sm_nsteps, sm_nsteps_loc,
                       sm_symm, sm_symm_loc, mpi_thread):
         sm_blocks = self.CalcBlocks(block_codes)
-        if self.comm.size == 1:
+        if self.mpi_comm.size == 1:
             sm_nsteps = sm_nsteps_loc*sm_nsteps
             sm_symm = sm_symm or sm_symm_loc
         if self.multiplicative: # multiplicative: smooth, AUX, moothback
@@ -169,15 +170,15 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
                     self.smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks)
         else: # additive: smooth + AUX
             if sm_blocks is None:
-                if comm.size > 1:
+                if ngs.mpi_world.size > 1:
                     # annoying - need to define a Preconditioner("local") BEFORE assemble...
                     # need to work with a blocksmoother..
                     raise Exception("this is annoying")
                 else:
                     self.smoother = self.blf.mat.CreateSmoother(self.freedofs)
             else:
-                self.smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks, parallel=self.comm.size>1)
-                if self.comm.size > 1: # EVIL HACK to get this to work as a D->C operation
+                self.smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks, parallel=self.mpi_comm.size>1)
+                if self.mpi_comm.size > 1: # EVIL HACK to get this to work as a D->C operation
                     # ParallelMatrix calls mult with local mat and .local_vec
                     # input is distributed, output set to distributed
                     self.smoother = ngs.ParallelMatrix(self.smoother, self.blf.mat.row_pardofs,
@@ -200,7 +201,7 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
             if not self.elint: # if elint, no need to check these - len(block) will be 0!
                 for elid in facet.elements:
                     cellid = ngs.NodeId(ngs.ELEMENT, elid.nr)
-                    block = list( dof for dof in V.GetDofNrs(cellid) if dof>=0 and self.freedofs[dof])
+                    block += list( dof for dof in V.GetDofNrs(cellid) if dof>=0 and self.freedofs[dof])
             if len(block):
                 blocks.append(block)
         return blocks
@@ -630,6 +631,7 @@ class MCS(FlowDiscretization):
         # for eps-eps order 1, take W/R in RT0 and add
         # h**2 div(W)*div(R) to the BLF to achieve stability
         self.WHDiv = self.sym and (self.order == 1)
+        # print("SET WHDIF {}, {}, {}".format(self.WHDiv, self.sym, self.order))
 
         # !! EITHER vhat=0 OR sigma_nt=0 on outlet!!
         vh_diri = settings.inlet + "|" + settings.wall_noslip
@@ -1336,7 +1338,8 @@ class StokesTemplate():
                 if V.mesh.comm.size==1 and sm_el_blocks:
                     sm_blocks = ["EL"]
                 else:
-                    sm_blocks = ["F", "C"][0:1 if self.elint else 2]
+                    sm_blocks = ["F","C"][0:1 if self.elint else 2]
+                    # sm_blocks = ["F+C"]
             else: # empty list -> GS smoother, not recommended
                 sm_blocks = []
 
@@ -1469,7 +1472,7 @@ class StokesTemplate():
             # # quit()
             # quit()
 
-            sm_blocks = ["facet", "cell"][0:1 if self.elint else 2]
+            sm_blocks = ["facet", "cell"][0:(1 if self.elint else 2)]
             # sm_blocks = ["facet"]
             # self.Apre = embA @ aux_pre @ embA.T
             self.Apre = AuxiliarySpacePreconditioner(self.a2, aux_pre, embA,
@@ -1495,8 +1498,8 @@ class StokesTemplate():
                     print("min ev. preA\A:", evs_AS[:5])
                     print("max ev. preA\A:", evs_AS[-5:])
                     print("cond-nr preA\A:", evs_AS[-1]/evs_AS[0])
-                    
-            evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=self.Apre, tol=1e-8))
+
+            evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=self.Apre, tol=1e-14))
             if self.a.space.mesh.comm.rank == 0:
                 print("\n----")
                 if not(self.elint and not self.it_on_sc):
@@ -1506,7 +1509,8 @@ class StokesTemplate():
                 print("min ev. preA\A:", evs_A[:5])
                 print("max ev. preA\A:", evs_A[-5:])
                 print("cond-nr preA\A:", evs_A[-1]/evs_A[0])
-            # quit()
+            return evs_A[-1]/evs_A[0]
+            quit()
 
             if exai:
                 if self.elint:

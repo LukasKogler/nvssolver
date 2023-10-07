@@ -34,9 +34,12 @@ ngsglobals.msg_level = 1
 
 #flow_settings = channel2d(maxh=0.2, nu=1e-3, L=40)
 #pqr = 0
+maxh = 1
 
-flow_settings = ST_3d(maxh=0.2, nu=1e-2)
-flow_settings.mesh.Curve(3)
+flow_settings = ST_3d(maxh=maxh, nu=1e-2, symmetric=False)
+flow_settings.mesh.ngmesh.Save("st3d_h_1.vol")
+quit()
+# flow_settings.mesh.Curve(3)
 pqr = 0
 
 # flow_settings = vortex2d(maxh=0.025, nu=1)
@@ -51,7 +54,7 @@ print("els " , flow_settings.mesh.ne)
 # quit()
 
 
-disc_opts = { "order" : 2,
+disc_opts = { "order" : 3,
               "hodivfree" : False,
               "truecompile" : False, #mpi_world.size == 1,
               "RT" : False,
@@ -71,12 +74,12 @@ sol_opts = { "elint" : True,
                      # "type" : "auxfacet",
                      "type" : "auxh1", 
                      # "amg_package" : "petsc",
-                     #"amg_package" : "ngs_amg",
+                    #  "amg_package" : "ngs_amg",
                      "amg_package" : "direct", # direct solve in auxiliary space
                      "aux_mlt" : True,
                      "blk_smoother" : True,
                      "sm_el_blocks" : False,
-                     "sm_nsteps" : 4,
+                     "sm_nsteps" : 1,
                      # "type" : "stokesamg", 
                      "amg_opts" : {
                          "ngs_amg_max_coarse_size" : 2,
@@ -97,8 +100,8 @@ sol_opts = { "elint" : True,
              }
 }
 
-SetNumThreads(1)
-with TaskManager(pajetrace = 50 * 2024 * 1024):
+# SetNumThreads(1)
+with TaskManager():#pajetrace = 50 * 2024 * 1024):
 
     tsup = Timer("solve")
     tsup.Start()
@@ -114,11 +117,9 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
     if sol_opts["pc_ver"] == "block":
        stokes.la.TestBlock()
 
-    # quit()
-
     ts = Timer("solve")
     ts.Start()
-    nits = stokes.Solve(tol=1e-6, ms = 500, solver = "gmres", use_sz = True, rel_err = False)
+    nits = stokes.Solve(tol=1e-14, ms = 200, solver = "gmres", use_sz = True, rel_err=True, printrates=True)
     ts.Stop()
     #input()
     if mpi_world.rank == 0:
@@ -135,6 +136,12 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
         print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (ts.time * mpi_world.size) / 1000, "K" ) 
         print("---\n")
     
+
+    print("stokes errors = ")
+    for k, v in enumerate(stokes.solver.errors):
+        print(k, v)
+        
+    pickle.dump(stokes.solver.errors, open("stokes_solver_errors_{}.log".format(str(maxh).replace(".", "_")), "wb")) 
 
     sys.stdout.flush()
 
