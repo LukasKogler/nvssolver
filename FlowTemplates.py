@@ -1535,9 +1535,9 @@ class StokesTemplate():
 
                 # also need this for low order because of Vhat
                 sparseEMb = NgsAMG.RestrictMatrixToBlocks(mat=sparseEMb,
-                                                            row_blocks=MakeFacetBlocks(stokes.disc.X),
-                                                            col_blocks=MakeFacetBlocks(self.Vaux),
-                                                            tol=1e-6)
+                                                          row_blocks=MakeFacetBlocks(stokes.disc.X),
+                                                          col_blocks=MakeFacetBlocks(self.Vaux),
+                                                          tol=1e-6)
 
                 sparseEMbT = NgsAMG.ToSparseMatrix(sparseEMb.T)
 
