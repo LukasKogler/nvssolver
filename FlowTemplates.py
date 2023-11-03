@@ -59,7 +59,7 @@ class CVADD (ngs.BaseMatrix):
         return self.Mcv.CreateColVector()
     def CreateRowVector(self):
         return self.Mcv.CreateRowVector()
-    
+
 class CumulateOp (ngs.BaseMatrix):
     def __init__(self, M):
         super(CumulateOp, self).__init__()
@@ -80,7 +80,7 @@ class CumulateOp (ngs.BaseMatrix):
     def MultAdd(self, scal, b, x):
         self.M.MultAdd(scal, b, x)
         x.Cumulate()
-    
+
 class SPCST (ngs.BaseMatrix):
     def __init__(self, smoother, pc, mat, emb, embT = None, swr=True, steps=1):
         super(SPCST, self).__init__()
@@ -165,7 +165,7 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
             sm_nsteps = sm_nsteps_loc*sm_nsteps
             sm_symm = sm_symm or sm_symm_loc
         if self.multiplicative: # multiplicative: smooth, AUX, moothback
-            if _NGsAMG: # use MPI-parallel multiplicative smoothers from NGsAMG 
+            if _NGsAMG: # use MPI-parallel multiplicative smoothers from NGsAMG
                 self.swr = True
                 if sm_blocks is None:
                     self.smoother = NGsAMG.CreateHybridGSS(mat = self.blf.mat, freedofs = self.freedofs, mpi_overlap = True,
@@ -244,7 +244,7 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
                     allblocks += self._block_makers[bt]()
             return allblocks
         else:
-            return None        
+            return None
     def IsComplex(self):
         return self.blf.mat.IsComplex()
     def Height(self):
@@ -265,7 +265,7 @@ class AuxiliarySpacePreconditioner (ngs.BaseMatrix):
         y.data += scal * self.op * x
     def GetOp():
         return self.op
-        
+
 # Schoeberl-Zulehner PC
 class SZPC(ngs.BaseMatrix):
     def __init__(self, M, Ahat, Shat):
@@ -306,7 +306,7 @@ class SZPC(ngs.BaseMatrix):
         x.data += scal * self.xtemp
     def MultTransAdd(self, scal, b, x):
         self.MultAdd(scal, b, x)
-                
+
 class PSZPC(ngs.BaseMatrix):
     def __init__(self, M, Ahat, Shat):
         super(PSZPC, self).__init__()
@@ -371,7 +371,7 @@ class FlowOptions:
 
         # domains
         self.fluid_domain = ".*" if fluid_domain is None else fluid_domain
-        
+
         # BCs
         self.inlet = inlet
         self.uin = uin
@@ -381,7 +381,7 @@ class FlowOptions:
 
         # grad:grad or eps:eps?
         self.sym = symmetric
-        
+
 ### END FlowOptions ###
 
 ### FlowDiscretization ###
@@ -407,11 +407,11 @@ class FlowDiscretization:
         self._stokesBBT = None
         self._stokesf = None
         self._stokesC = None
-        
+
     def Compile (self, term):
         return term.Compile(realcompile = self.truecompile, wait = True)
 
-        
+
     def stokesA(self):
         if self._stokesA == None:
             self._stokesA = self.Compile(self.a_vol) * ngs.dx + self.Compile(self.a_bnd) * self.dS
@@ -463,7 +463,7 @@ class FlowDiscretization:
             # self._stokesf = self.f_vol * ngs.dx(bonus_intorder=self.bonus_intorder_rhs)
         # self._stokesf = self.Compile(self.f_bnd) * ngs.ds
         return self._stokesf
-    
+
 ### END FlowDiscretization ###
 
 
@@ -504,7 +504,7 @@ class HDG(FlowDiscretization):
                               dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
         else:
             self.W = None
-    
+
         if self.compress and self.settings.fluid_domain != ".*":
                 self.V = ngs.Compress(self.V)
                 self.Vhat = ngs.Compress(self.Vhat)
@@ -587,7 +587,7 @@ class HDG(FlowDiscretization):
                 self.rhs_outlet  = ngs.InnerProduct(self.settings.velhat_outlet_f, vhat.Trace())
             else:
                 self.rhs_outlet += ngs.InnerProduct(self.settings.velhat_outlet_f, vhat.Trace())
-            
+
         # self.f_bnd = self.settings.uin * v
         self._mass_int = u*v*ngs.dx + self.h * uhat*vhat*self.dS
 
@@ -606,7 +606,7 @@ class HDG(FlowDiscretization):
         eta = gfu.components[2] if self.sym else None
         p = gfp
         return vel, vh, sigma, eta, p
-    
+
     def H1AEmbedding(self, V, elint):
         emb0 = ngs.comp.ConvertOperator(spacea = V, spaceb = self.V, \
                                         range_dofs = self.V.FreeDofs(elint), \
@@ -749,7 +749,7 @@ class MCS(FlowDiscretization):
                 u, uhat, sigma, W = self.X.TrialFunction()
                 v, vhat, tau, R = self.X.TestFunction()
                 if False:
-                    # this way W, R scale like sigma, tau (for numerical stability) 
+                    # this way W, R scale like sigma, tau (for numerical stability)
                     W = 1/self.h**self.settings.mesh.dim * W
                     R = 1/self.h**self.settings.mesh.dim * R
             else:
@@ -854,7 +854,7 @@ class MCS(FlowDiscretization):
                                       op = ngs.ParallelMatrix.C2C)
         return embA
 
-        
+
 
 ### END MCS Discretization ###
 
@@ -897,7 +897,7 @@ class StokesTemplate():
                 self.velocity, self.velhat, self.sigma, \
                     self.eta, self.pressure = stokes.disc.GetPhysicalQuantities(self.gfu)
                 self.sol_vec = self.gfu.vec
-            
+
             self._to_assemble = []
 
             self.SetUpFWOps(stokes)
@@ -954,7 +954,7 @@ class StokesTemplate():
             else:
                 self.pc_avail[pc_ver](stokes, pc_opts)
 
-                
+
         def SetUpFWOps(self, stokes):
             # Forward operators
             if self.block_la:
@@ -1021,8 +1021,8 @@ class StokesTemplate():
                 self._to_assemble += [ ("m", self.m) ]
                 self.a = self.m
                 self.a2 = self.m
-                
-                
+
+
         def SetUpRHS(self, stokes):
             # Right hand side
             if self.block_la:
@@ -1057,7 +1057,7 @@ class StokesTemplate():
                     if ngs.mpi_world.rank == 0:
                         print("\n===\nassembling {} took {} sec\n===".format(name, t.time))
                         sys.stdout.flush()
-                    
+
 
         def PrepRHS(self, rhs_vec):
             if self.elint and self.it_on_sc:
@@ -1067,7 +1067,7 @@ class StokesTemplate():
 
         def ExtendSol(self, sol_vec, rhs_vec):
             if self.elint and self.it_on_sc:
-                sv = sol_vec[0] if self.block_la else sol_vec 
+                sv = sol_vec[0] if self.block_la else sol_vec
                 rv = rhs_vec[0] if self.block_la else rhs_vec
                 rv.Distribute()
                 sv.Cumulate()
@@ -1095,7 +1095,7 @@ class StokesTemplate():
                         Isolve = ngs.ParallelMatrix(Miii, row_pardofs = self.m.mat.row_pardofs,
                                                     col_pardofs = self.m.mat.row_pardofs, op = ngs.ParallelMatrix.D2C)
                         self.Mpre = ( Ihex @ self.Mpre @ Ihext ) + Isolve
-            
+
         def SetUpBlock(self, stokes, a_opts = { "type" : "direct" } , **kwargs):
             if not self.block_la:
                 raise Exception("block-PC with big compond space todo")
@@ -1139,7 +1139,7 @@ class StokesTemplate():
                         Isolve = ngs.ParallelMatrix(Aiii, row_pardofs = self.a.mat.row_pardofs,
                                                     col_pardofs = self.a.mat.row_pardofs, op = ngs.ParallelMatrix.D2C)
                         self.Apre = ( Ihex @ self.Apre @ Ihext ) + Isolve
-               
+
                 self.Mpre = ngs.BlockMatrix( [ [self.Apre, None],
                                                [None, self.Spre] ] )
 
@@ -1264,7 +1264,7 @@ class StokesTemplate():
                 return embA, tc1@emb1, tc2@emb2
             else:
                 return embA
-            
+
         def SetUpAAux (self, stokes, amg_package = "petsc", amg_opts = dict(), mpi_thrad = False, mpi_overlap = False, shm = None,
                        multiplicative = True, sm_el_blocks = False, aux_mlt = True, blk_smoother = True,
                        sm_nsteps = 1, sm_symm = False, sm_nsteps_loc = 1, sm_symm_loc = False, sm_mpi_thread = True, **kwargs):
@@ -1297,7 +1297,7 @@ class StokesTemplate():
             for opt, val in amg_opts.items():
                 if callable(val):
                     amg_opts[opt] = val(V)
-                    
+
             # t = ngs.Timer("assemble AUX")
             # a_aux.space.mesh.comm.Barrier()
             # t.Start()
@@ -1311,7 +1311,7 @@ class StokesTemplate():
             t = ngs.Timer("AUX assemble+sup solver")
             a_aux.space.mesh.comm.Barrier()
             t.Start()
-                    
+
             if not aux_direct:
                 if not use_petsc:
                     if stokes.settings.sym:
@@ -1348,7 +1348,7 @@ class StokesTemplate():
             if V.mesh.comm.size>1 and blk_smoother and sm_el_blocks:
                     raise Exception("element-blocks with MPI not implemented!")
 
-            # Blocks for smoother to combine with auxiliary PC    
+            # Blocks for smoother to combine with auxiliary PC
             if blk_smoother:
                 if V.mesh.comm.size==1 and sm_el_blocks:
                     sm_blocks = ["EL"]
@@ -1362,10 +1362,10 @@ class StokesTemplate():
                                                      sm_nsteps=sm_nsteps, sm_nsteps_loc=sm_nsteps_loc,
                                                      sm_symm=sm_symm, sm_symm_loc=sm_symm_loc, elint=self.elint,
                                                      mpi_thread = sm_mpi_thread)
-            
-           
+
+
             ## END SetUpAAux ##
-            
+
         def SetUpAFacet (self, stokes, amg_opts = dict(), **kwargs):
             if not _NGsAMG:
                 raise Exception("Facet Auxiliary space Preconditioner only available with NGsAMG!")
@@ -1404,7 +1404,7 @@ class StokesTemplate():
             useAuxSpaceBLF = False
 
             embA = self.AuxToMCSEmbedding(stokes, self.Vaux, localop=False, allops=False, projectN=projectN, asSparse=False, projectToFree=True)
-            
+
             if True:
                 amg_cl = NGsAMG.stokes_gg_2d if stokes.settings.mesh.dim == 2 else NGsAMG.stokes_gg_3d
 
@@ -1414,7 +1414,7 @@ class StokesTemplate():
 
                 if not "ngs_amg_energy" in amg_opts:
                     amg_opts["ngs_amg_energy"] = "alg"
-                    
+
                 # Auxiliary space BLF without divergence penalty (for weights)
                 use_nodiv = amg_opts["ngs_amg_energy"] == "alg" and stokes.disc.ddp != 0.0
                 if use_nodiv:
@@ -1480,7 +1480,7 @@ class StokesTemplate():
                     embAT = embA.T
             else:
                 aux_pre = a_aux.mat.Inverse(self.Vaux.FreeDofs(self.elint))
-            
+
             # emb_c = ngs.comp.ConvertOperator(spacea=Vaux, spaceb=Vc, localop=False)
             # embA = self.AuxToMCSEmbedding(stokes, Vc, True) @ emb_c
 
@@ -1518,13 +1518,13 @@ class StokesTemplate():
 
         def SetUpDummy(self, stokes, **kwargs):
             self.Mpre = ngs.Projector(stokes.disc.Xext.FreeDofs(self.elint), True)
-                
-                
+
+
         def TestBlock(self, exai = False):
             o_ms_l = ngs.ngsglobals.msg_level
             ngs.ngsglobals.msg_level = 0
 
-            
+
             if self.elint and not self.it_on_sc:
                 evs_AS = list(ngs.la.EigenValues_Preconditioner(mat=self.a.mat, pre=self.ASpre, tol=1e-8))
                 if self.a.space.mesh.comm.rank == 0:
@@ -1534,7 +1534,7 @@ class StokesTemplate():
                     print("min ev. preA\A:", evs_AS[:5])
                     print("max ev. preA\A:", evs_AS[-5:])
                     print("cond-nr preA\A:", evs_AS[-1]/evs_AS[0])
-                    
+
             evs_A = list(ngs.la.EigenValues_Preconditioner(mat=self.A, pre=self.Apre, tol=1e-8))
             if self.a.space.mesh.comm.rank == 0:
                 print("\n----")
@@ -1589,10 +1589,10 @@ class StokesTemplate():
 
             return evs_A[-1]/evs_A[0], evs_S[-1]/evs0, evs_A, evs_S
 
-        
+
     def __init__(self, flow_settings = None, flow_opts = None, disc = None, disc_opts = {}, sol_opts = None):
 
-        # mesh, geometry, physical parameters 
+        # mesh, geometry, physical parameters
         if flow_settings is not None:
             self.settings = flow_settings
         elif flow_opts is not None:
@@ -1624,12 +1624,12 @@ class StokesTemplate():
         self.sigma = self.la.sigma
         self.eta = self.la.eta
         self.pressure = self.la.pressure
-            
+
     def InitLinAlg(self, sol_opts = None):
         if sol_opts is None:
             sol_opts = dict()
         self.la = self.LinAlg(self, **sol_opts)
-        
+
     def AssembleLinAlg(self):
         self.la.Assemble()
 
@@ -1637,7 +1637,7 @@ class StokesTemplate():
               restart = 10000):
 
         pr = ngs.mpi_world.rank==0 if printrates is None else printrates
-        
+
         homogenize = len(self.settings.inlet)>0 and self.settings.uin is not None
 
         rhs_vec = self.la.rhs_vec.CreateVector()
@@ -1647,7 +1647,7 @@ class StokesTemplate():
             sol_vec = self.la.sol_vec.CreateVector()
             self.velocity.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inlet))
             self.velhat.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inlet))
-            rhs_vec.data -= self.la.M * self.la.sol_vec 
+            rhs_vec.data -= self.la.M * self.la.sol_vec
         else:
             sol_vec = self.la.sol_vec
 
@@ -1672,7 +1672,7 @@ class StokesTemplate():
         else:
             def nip(x, y):
                 return ngs.InnerProduct(x, y)
-            
+
         print("solve prep done")
         sys.stdout.flush()
 
@@ -1688,7 +1688,7 @@ class StokesTemplate():
             self.solver = bp_cg
         elif solver == "gmres":
             # ngs.solvers.GMRes(A = self.la.M, b = rhs_vec, x = sol_vec, pre = self.la.Mpre,
-            #                   tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms ) 
+            #                   tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms )
             # note: to compare, use rel_err=False
             # A = ngs.BlockMatrix([ [ self.la.Apre, self.la.Apre @ self.la.BT @ self.la.Spre ],
             #                       [ None, - self.la.Spre ] ])
