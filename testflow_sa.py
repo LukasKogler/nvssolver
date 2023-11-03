@@ -33,12 +33,14 @@ ngsglobals.testout = "test.out"
 # flow_settings = channel2d(maxh=0.01, nu=1e-3, L=1)
 # pqr = 0
 
-# flow_settings = vortex2d(maxh=0.05, nu=1)
+# flow_settings = vortex2d(maxh=0.4, nu=1)
 # pqr = 1e-7
 
-# flow_settings = ST_2d(maxh=0.05, nu=1e-3, symmetric=False)
+# flow_settings.l2_coef = 1
+
+flow_settings = ST_2d(maxh=0.05, nu=1e-3, symmetric=False)
 # flow_settings.mesh.Curve(3)
-# pqr = 0
+pqr = 0
 
 # flow_settings = channel2d(maxh=0.1, nu=1e-3, L=5, nref=1, symmetric=True)
 # pqr = 0
@@ -46,9 +48,9 @@ ngsglobals.testout = "test.out"
 # flow_settings = channel2d(maxh=0.1, nu=1e-3, L=40)
 # pqr = 0
 
-flow_settings = ST_3d(maxh=0.2, nu=1, symmetric=False, L=2.5*10)
+# flow_settings = ST_3d(maxh=0.2, nu=1, symmetric=False, L=2.5*1)
 # # flow_settings.mesh.Curve(3)
-pqr = 0
+# pqr = 0
 # flow_settings.wall_noslip = ""
 # flow_settings.inlet = ""
 # flow_settings.outlet = ""
@@ -69,10 +71,13 @@ pqr = 0
 # print("facets " , flow_settings.mesh.nfacet)
 # print("els " , flow_settings.mesh.ne)
 
-ddp = 1e6
+ddp = 1e4
+
+# Note: elint=True AND hodivfree=True are required for
+#       Aux-mat-project (because of el-by-el hex/hext sparsification)
 
 disc_opts = { "order" : 1,
-              "hodivfree" : False,
+              "hodivfree" : True,
               "truecompile" : False, #mpi_world.size == 1,
               "RT" : False,
               "compress" : True,
@@ -124,9 +129,8 @@ sol_opts = { "elint" : True,
              "pc_ver" : "block", # "block", "direct"
              "pc_opts" : {
                  "a_opts" : {
-                     # "type" : "direct",
-                     # "type" : "auxh1",
-                     "type" : "stokesamg",
+                     "type" : [ "direct", "auxh1", "auxStokesAMG" ][2],
+                     "amg_package" : "direct",
                      "mlt_smoother" : True,
                      "blk_smoother" : True,
                      "sm_el_blocks" : False,
@@ -139,6 +143,13 @@ sol_opts = { "elint" : True,
              }
 }
 
+def printDofs(name, fes):
+    n = fes.ndof
+    nF = fes.FreeDofs(False).NumSet()
+    nS = fes.FreeDofs(True).NumSet()
+    nDiff = nF - nS
+    print(f"{name}:  #dofs = {n}, #dofs free = {nF}, losing {nDiff} in static cond, leaving {nS}")
+
 SetNumThreads(1)
 with TaskManager():#pajetrace = 50 * 2024 * 1024):
 
@@ -147,6 +158,37 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
     tsup.Start()
     stokes = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts)
     tsup.Stop()
+
+    if mpi_world.rank == 0:
+        print("\n---")
+        print("els ", stokes.disc.X.mesh.ne)
+        print("A dofs  ", stokes.disc.X.ndofglobal)
+        # V, Vhat, Sigma, W
+        printDofs("V    ", stokes.disc.X.components[0])
+        printDofs("Vhat ", stokes.disc.X.components[1])
+        printDofs("Sigma", stokes.disc.X.components[2])
+        if hasattr(stokes.la, "Vaux"):
+            printDofs("Vaux ", stokes.la.Vaux)
+        print("Q dofs  ", stokes.disc.Q.ndofglobal)
+        print("A+Q dofs", stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal)
+
+
+    # V = stokes.disc.X.components[0]
+    # Vhat = stokes.disc.X.components[1]
+    # Sigma = stokes.disc.X.components[2]
+    # Vaux = stokes.la.Vaux
+    # for k, facet in enumerate(stokes.disc.X.components[0].mesh.facets):
+    #     print(f"facet {facet}, dofs V = {V.GetDofNrs(facet)}, Vhat = {Vhat.GetDofNrs(facet)}")
+    #     print(f"facet {facet}, dofs X = {stokes.disc.X.GetDofNrs(facet)}, Vaux = {Vaux.GetDofNrs(facet)}")
+    #     print("")
+    #     if k == 10:
+    #         quit()
+    #         break
+
+
+
+    stokes.la.TestBlock()
+    # quit()
 
     X = stokes.disc.X
     Q = stokes.disc.X
@@ -199,13 +241,14 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
     # quit()
 
 SetNumThreads(1)
-with TaskManager(pajetrace = 50 * 2024 * 1024):
-    ts = Timer("solve")
-    ts.Start()
-    # nits = stokes.Solve(tol=1e-6, ms = 100, presteps = 0, solver = "minres", use_sz = False, rel_err = False, printrates = True)
-    nits = stokes.Solve(tol=1e-6, ms = 500, presteps = 0, solver = "gmres", use_sz = True, rel_err = False, printrates = True)
-    # nits = 0
-    ts.Stop()
+# with TaskManager(pajetrace = 50 * 2024 * 1024):
+
+ts = Timer("solve")
+ts.Start()
+# nits = stokes.Solve(tol=1e-6, ms = 100, presteps = 0, solver = "minres", use_sz = False, rel_err = False, printrates = True)
+nits = stokes.Solve(tol=1e-12, ms = 500, presteps = 0, solver = "gmres", use_sz = True, rel_err = False, printrates = True)
+# nits = 0
+ts.Stop()
 
 SetNumThreads(1)
 with TaskManager():#pajetrace = 50 * 2024 * 1024):
@@ -230,11 +273,11 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
     sol_opts["elint"] = False
     # disc_opts["divdivpen"] = 0
     sol_opts["pc_ver"] = "direct"
-    sol_opts["pc_opts"]["inv_type"] = "mumps"
+    sol_opts["pc_opts"]["inv_type"] = ["masterinverse", "mumps"][1]
     # # sol_opts["elint"] = False
 
     stokesex = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts)
-    stokesex.Solve(tol=1e-6, ms = 500, solver = "apply_pc")
+    stokesex.Solve(tol=1e-6, ms = 500, solver = "apply_pc", printrates=True)
 
     # quit()
 
@@ -245,22 +288,23 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
     print("norm err l2 = ", norm_err)
     print("norm err L2 = ", norm_errl2)
 
-    quit()
-
-    if mpi_world.rank == 0:
-        import matplotlib.pyplot as plt
-        plt.semilogy(stokes.solver.errors)
-        plt.show()
+    # if mpi_world.rank == 0:
+    #     import matplotlib.pyplot as plt
+    #     plt.semilogy(stokes.solver.errors)
+    #     plt.show()
 
 
     # Vvel = HDiv(mesh = stokes.settings.mesh, order = disc_opts["order"])
     # myvel = GridFunction(Vvel)
     # myvel.vec.data = stokes.velocity.vec
-    # Draw(stokes.velocity, stokes.settings.mesh, "velocity")
+    Draw(stokesex.velocity, stokes.settings.mesh, "velocity_ex")
+    Draw(stokes.velocity, stokes.settings.mesh, "velocity")
     # picklefile = open("myout.dat", "wb")
     # pickle.dump(myvel, picklefile)
     # picklefile.close()
     # print(stokes.velocity)
+
+    
 
 
     print("finished")

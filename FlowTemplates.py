@@ -87,7 +87,7 @@ class CumulateOp (ngs.BaseMatrix):
         x.Cumulate()
 
 class SPCST (ngs.BaseMatrix):
-    def __init__(self, smoother, pc, mat, emb, embT = None, swr=True, steps=1):
+    def __init__(self, smoother, pc, mat, emb, swr=True, steps=1, embT=None):
         super(SPCST, self).__init__()
         self.swr = swr # smooth with residuum
         self.A = mat
@@ -127,8 +127,7 @@ class SPCST (ngs.BaseMatrix):
                 self.S.Smooth(x, b)
             self.res.data = b - self.A * x
         if self.pc is not None:
-            # self.emb_pc.MultAdd(1.0, self.res, x)
-            self.emb_pc.Mult(self.res, x)
+            self.emb_pc.MultAdd(1.0, self.res, x)
         if self.swr: # Backward smoothing - no need to update residual
             self.S.SmoothBackK(self.steps, x, b, self.res, False, False, False)
         else:
@@ -136,7 +135,7 @@ class SPCST (ngs.BaseMatrix):
                 self.S.SmoothBack(x, b)
 
 class AuxiliarySpacePreconditioner(ngs.BaseMatrix):
-    def __init__(self, blf, aux_pre, embedding, sm_blocks = ["facet"], embeddingT = None, multiplicative = True,
+    def __init__(self, blf, aux_pre, embedding, sm_blocks = ["F"], embeddingT = None, multiplicative = True,
                  sm_nsteps = 1, sm_nsteps_loc = 1, sm_symm = False, sm_symm_loc = False,
                  elint = False, mpi_thread = True):
         super(AuxiliarySpacePreconditioner, self).__init__()
@@ -145,7 +144,7 @@ class AuxiliarySpacePreconditioner(ngs.BaseMatrix):
         self.aux_pre = aux_pre
         self.embedding  = embedding
         self.embeddingT = embeddingT if embeddingT is not None else self.embedding.T
-        # self.comm = self.blf.spacee.comm
+        self._comm = self.blf.space.mesh.comm # cannot set self.comm bc we interhit from BaseMatrix I think?
         self.elint = elint
         self.freedofs = self.blf.space.FreeDofs(self.elint)
         self.swr = False
@@ -168,14 +167,13 @@ class AuxiliarySpacePreconditioner(ngs.BaseMatrix):
     def SetUpSmoother(self, block_codes, sm_nsteps, sm_nsteps_loc,
                       sm_symm, sm_symm_loc, mpi_thread):
         sm_blocks = self.CalcBlocks(block_codes)
-        if self.blf.space.mesh.comm.size == 1:
+        if self._comm.size == 1:
             sm_nsteps = sm_nsteps_loc*sm_nsteps
             sm_symm = sm_symm or sm_symm_loc
         if self.multiplicative: # multiplicative: smooth, AUX, moothback
             if _ngsAMG: # use MPI-parallel multiplicative smoothers from NgsAMG
                 self.swr = True
                 if sm_blocks is None:
-                    print("CreateHybridGSS")
                     self.smoother = NgsAMG.CreateHybridGSS(mat = self.blf.mat, freedofs = self.freedofs, mpi_overlap = True,
                                                             mpi_thread = mpi_thread, nsteps = sm_nsteps, symm = sm_symm, pinv = False,
                                                             nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
@@ -200,8 +198,8 @@ class AuxiliarySpacePreconditioner(ngs.BaseMatrix):
                 else:
                     self.smoother = self.blf.mat.CreateSmoother(self.freedofs)
             else:
-                self.smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks, parallel=self.blf.space.mesh.comm.size>1)
-                if self.blf.space.mesh.comm.size > 1: # EVIL HACK to get this to work as a D->C operation
+                self.smoother = self.blf.mat.local_mat.CreateBlockSmoother(sm_blocks, parallel=self._comm.size>1)
+                if self._comm.size > 1: # EVIL HACK to get this to work as a D->C operation
                     # ParallelMatrix calls mult with local mat and .local_vec
                     # input is distributed, output set to distributed
                     self.smoother = ngs.ParallelMatrix(self.smoother, self.blf.mat.row_pardofs,
@@ -1429,7 +1427,7 @@ class StokesTemplate():
                 sm_blocks = []
 
             # Auxiliary space PC (additive or multiplicative)
-            self.Apre = AuxiliarySpacePreconditioner(self.a, aux_pre, embA, sm_blocks=[], multiplicative=True,
+            self.Apre = AuxiliarySpacePreconditioner(self.a, aux_pre, embA, sm_blocks=sm_blocks, multiplicative=aux_mlt,
                                                      sm_nsteps=sm_nsteps, sm_nsteps_loc=sm_nsteps_loc,
                                                      sm_symm=sm_symm, sm_symm_loc=sm_symm_loc, elint=self.elint,
                                                      mpi_thread = sm_mpi_thread)
@@ -1476,85 +1474,85 @@ class StokesTemplate():
 
             # Whether to project the normal component to order 0 which makes the embedding facet-wise
             projectN = stokes.disc.order > 0
-            useAuxSpaceBLF = True
+            useAuxSpaceBLF = False
+            directAuxInv = False
 
             embA = self.AuxToMCSEmbedding(stokes, self.Vaux, localop=False, allops=False, projectN=projectN, asSparse=False, projectToFree=True)
 
-            if True:
-                amg_cl = NgsAMG.stokes_gg_2d if stokes.settings.mesh.dim == 2 else NgsAMG.stokes_gg_3d
+            for opt, val in amg_opts.items():
+                if callable(val):
+                    amg_opts[opt] = val(Vaux)
 
-                for opt, val in amg_opts.items():
-                    if callable(val):
-                        amg_opts[opt] = val(Vaux)
+            if not "ngs_amg_energy" in amg_opts:
+                amg_opts["ngs_amg_energy"] = "alg"
 
-                if not "ngs_amg_energy" in amg_opts:
-                    amg_opts["ngs_amg_energy"] = "alg"
+            # Auxiliary space BLF without divergence penalty (for weights)
+            use_nodiv = amg_opts["ngs_amg_energy"] == "alg" and stokes.disc.ddp != 0.0
+            if use_nodiv:
+                a_aux_nodiv = self.SetUpAuxSpaceBLF(stokes, self.Vaux, ddp=0)
+                a_aux_nodiv.Assemble()
 
-                # Auxiliary space BLF without divergence penalty (for weights)
-                use_nodiv = amg_opts["ngs_amg_energy"] == "alg" and stokes.disc.ddp != 0.0
-                if use_nodiv:
-                    a_aux_nodiv = self.SetUpAuxSpaceBLF(stokes, self.Vaux, ddp=0)
-                    a_aux_nodiv.Assemble()
+            amg_cl = NgsAMG.stokes_gg_2d if stokes.settings.mesh.dim == 2 else NgsAMG.stokes_gg_3d
 
-                if useAuxSpaceBLF: # assemble BLF in aux space
+            if useAuxSpaceBLF: # assemble BLF in aux space
 
-                    # Auxiliary space BLF
-                    u, v = self.Vaux.TnT()
-                    a_aux = self.SetUpAuxSpaceBLF(stokes, self.Vaux, ddp=stokes.disc.ddp)
+                # Auxiliary space BLF
+                u, v = self.Vaux.TnT()
+                a_aux = self.SetUpAuxSpaceBLF(stokes, self.Vaux, ddp=stokes.disc.ddp)
 
-                    # a_aux += 1/ngs.specialcf.mesh_size * ngs.InnerProduct(u - u.Other(), v - v.Other()) * ngs.dx(element_boundary=True)
+                # a_aux += 1/ngs.specialcf.mesh_size * ngs.InnerProduct(u - u.Other(), v - v.Other()) * ngs.dx(element_boundary=True)
 
-                    n = ngs.specialcf.normal(stokes.settings.mesh.dim)
-                    if dgj:
-                        a_aux += 30 * stokes.settings.nu/ngs.specialcf.mesh_size * ( ((u - u.Other())*n) * ((v - v.Other())*n) ) * ngs.dx(element_boundary=True)
+                n = ngs.specialcf.normal(stokes.settings.mesh.dim)
+                if dgj:
+                    a_aux += 30 * stokes.settings.nu/ngs.specialcf.mesh_size * ( ((u - u.Other())*n) * ((v - v.Other())*n) ) * ngs.dx(element_boundary=True)
 
-                    # a_aux += ngs.InnerProduct(u, v) * ngs.dx(element_boundary=True)
+                # a_aux += ngs.InnerProduct(u, v) * ngs.dx(element_boundary=True)
+                if not directAuxInv:
                     if use_nodiv:
                         aux_pre = amg_cl(a_aux, a_aux_nodiv.mat, **amg_opts)
                     else:
                         aux_pre = amg_cl(a_aux, **amg_opts)
 
-                    t = ngs.Timer("aux-assemble")
-                    a_aux.space.mesh.comm.Barrier()
-                    t.Start()
+                t = ngs.Timer("aux-assemble")
+                a_aux.space.mesh.comm.Barrier()
+                t.Start()
 
-                    a_aux.Assemble()
+                a_aux.Assemble()
 
-                    self.Vaux.mesh.comm.Barrier()
-                    t.Stop()
-                    if ngs.mpi_world.rank == 0:
-                        print("\n===\nassembling AUX SPACE (STOKES AMG) took {} sec\n===".format(t.time))
-                        sys.stdout.flush()
+                self.Vaux.mesh.comm.Barrier()
+                t.Stop()
+                if ngs.mpi_world.rank == 0:
+                    print("\n===\nassembling AUX SPACE (STOKES AMG) took {} sec\n===".format(t.time))
+                    sys.stdout.flush()
 
-                    embAT = embA.T
-                else: # project HDG/MCS matrix to aux space
+                embAT = embA.T
 
-                    # sparsify embedding
-                    sparseEMb = NgsAMG.ToSparseMatrix(embA)
-
-                    # also need this for low order because of Vhat
-                    sparseEMb = NgsAMG.RestrictMatrixToBlocks(mat=sparseEMb,
-                                                              row_blocks=MakeFacetBlocks(stokes.disc.X),
-                                                              col_blocks=MakeFacetBlocks(self.Vaux),
-                                                              tol=1e-6)
-
-                    sparseEMbT = NgsAMG.ToSparseMatrix(sparseEMb.T)
-
-                    auxMat = NgsAMG.ToSparseMatrix( sparseEMbT @ self.A @ sparseEMb)
-
-                    aux_pre = amg_cl(fes=self.Vaux,
-                                     freedofs=self.Vaux.FreeDofs(self.elint),
-                                     mat=auxMat,
-                                     weight_mat=a_aux_nodiv.mat,
-                                     **amg_opts)
-
-                    # This does not work with SPCST in AuxiliarySpacePreconditioner for some reason!
-                    # embA  = sparseEMb
-                    # embAT = sparseEMbT
-
-                    embAT = embA.T
+                if directAuxInv:
+                    aux_pre = a_aux.mat.Inverse(self.Vaux.FreeDofs(self.elint))
             else:
-                aux_pre = a_aux.mat.Inverse(self.Vaux.FreeDofs(self.elint))
+                # sparsify embedding
+                sparseEMb = NgsAMG.ToSparseMatrix(embA)
+
+                # also need this for low order because of Vhat
+                sparseEMb = NgsAMG.RestrictMatrixToBlocks(mat=sparseEMb,
+                                                            row_blocks=MakeFacetBlocks(stokes.disc.X),
+                                                            col_blocks=MakeFacetBlocks(self.Vaux),
+                                                            tol=1e-6)
+
+                sparseEMbT = NgsAMG.ToSparseMatrix(sparseEMb.T)
+
+                auxMat = NgsAMG.ToSparseMatrix( sparseEMbT @ self.A @ sparseEMb)
+
+                if directAuxInv:
+                    aux_pre = auxMat.Inverse(self.Vaux.FreeDofs(self.elint))
+                else:
+                    aux_pre = amg_cl(fes=self.Vaux,
+                                        freedofs=self.Vaux.FreeDofs(self.elint),
+                                        mat=auxMat,
+                                        weight_mat=a_aux_nodiv.mat,
+                                        **amg_opts)
+
+                embAT = embA.T
 
             # emb_c = ngs.comp.ConvertOperator(spacea=Vaux, spaceb=Vc, localop=False)
             # embA = self.AuxToMCSEmbedding(stokes, Vc, True) @ emb_c
@@ -1582,7 +1580,7 @@ class StokesTemplate():
             # # quit()
             # quit()
 
-            sm_blocks = ["facet", "cell"][0:1 if self.elint else 2]
+            sm_blocks = ["F", "C"][0:1 if self.elint else 2]
             # sm_blocks = ["facet"]
             # self.Apre = embA @ aux_pre @ embA.T
             # self.Apre = embA@aux_pre@embA.T
