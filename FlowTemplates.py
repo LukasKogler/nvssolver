@@ -39,6 +39,13 @@ def MakeFacetBlocks(V, freedofs=None):
                 blocks.append(block)
     return blocks
 
+def hangCheck(prompt):
+    if ngs.mpi_world.rank == 0:
+        print("barrier for at ", prompt)
+    ngs.mpi_world.Barrier()
+    if ngs.mpi_world.rank == 0:
+        input(prompt)
+
 ### Misc Utilities ###
 class CVADD (ngs.BaseMatrix):
     def __init__(self, M, Mcv):
@@ -175,14 +182,14 @@ class AuxiliarySpacePreconditioner(ngs.BaseMatrix):
                 self.swr = True
                 if sm_blocks is None:
                     self.smoother = NgsAMG.CreateHybridGSS(mat = self.blf.mat, freedofs = self.freedofs, mpi_overlap = True,
-                                                            mpi_thread = mpi_thread, nsteps = sm_nsteps, symm = sm_symm, pinv = False,
-                                                            nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
+                                                           mpi_thread = mpi_thread, nsteps = sm_nsteps, symm = sm_symm, pinv = False,
+                                                           nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
                 else:
                     self.smoother = NgsAMG.CreateHybridBlockGSS(mat = self.blf.mat, blocks = sm_blocks, shm = False, # new bs not shm-par!
-                                                                 mpi_overlap = True, mpi_thread = mpi_thread, pinv = False,
-                                                                 bs2 = True, blocks_no = False,
-                                                                 nsteps = sm_nsteps, symm = sm_symm,
-                                                                 nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
+                                                                mpi_overlap = True, mpi_thread = mpi_thread, pinv = False,
+                                                                bs2 = True, blocks_no = False,
+                                                                nsteps = sm_nsteps, symm = sm_symm,
+                                                                nsteps_loc = sm_nsteps_loc, symm_loc = sm_symm_loc)
             else: # shm-parallel multiplicative smoothers from NGSolve (no MPI)
                 self.swr = False
                 if sm_blocks is None:
@@ -702,7 +709,7 @@ class MCS(FlowDiscretization):
                                                        definedon = self.settings.fluid_domain)
             self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, \
                                       discontinuous = True, ordertrace = self.order-1 if self.trace_sigma else -1, \
-                                        definedon = self.settings.fluid_domain)
+                                      definedon = self.settings.fluid_domain)
             # self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True)
             # self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True)
             self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order-1, \
@@ -1266,28 +1273,34 @@ class StokesTemplate():
                 print("\n===\nCONVERT 0")
                 sys.stdout.flush()
 
-            useLocalOp = not asSparse
-
             if projectN and (stokes.disc.order > 0):
                 print(" -> PROJECT V-AUX TO ORDER 0!")
                 sys.stdout.flush()
 
+                if not _ngsAMG and stokes.disc.hodivfree and not (stokes.disc.order > 1):
+                    raise Exception("HDiv dual shapes with hodivfree and order>1 do not work, need NgsAMG for facet-wise LO-TO-HO embedding!")
+
                 Vlo = ngs.HDiv(stokes.settings.mesh, order=0, dirichlet = stokes.settings.wall_noslip + "|" + stokes.settings.inlet)
 
-                aux_lo = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = Vlo, localop = useLocalOp, parmat = False, bonus_intorder_ab = 2,
+                aux_lo = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = Vlo, localop = localop, parmat = False, bonus_intorder_ab = 2,
                                                   range_dofs = Vlo.FreeDofs() if projectToFree else None)
-                lo_ho = ngs.comp.ConvertOperator(spacea = Vlo, spaceb = stokes.disc.V, localop = useLocalOp, parmat = False, bonus_intorder_ab = 2,
-                                                  range_dofs = stokes.disc.V.FreeDofs(self.elint) if projectToFree else None)
+
+                if _ngsAMG:
+                    lo_ho = NgsAMG.LOToHOFacetEmbedding(orig=Vlo, dest=stokes.disc.V, destFree=stokes.disc.V.FreeDofs(self.elint) if projectToFree else None)
+                else:
+                    lo_ho = ngs.comp.ConvertOperator(spacea = Vlo, spaceb = stokes.disc.V, localop = localop, parmat = False, bonus_intorder_ab = 2,
+                                                    range_dofs = stokes.disc.V.FreeDofs(self.elint) if projectToFree else None)
+
                 emb0 =  lo_ho @ aux_lo
             else:
-                emb0 = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = stokes.disc.V, localop = localop and useLocalOp, parmat = False, bonus_intorder_ab = 2,
+                emb0 = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = stokes.disc.V, localop = localop, parmat = False, bonus_intorder_ab = 2,
                                                 range_dofs = stokes.disc.V.FreeDofs(self.elint) if projectToFree else None)
 
             tc0 = stokes.disc.X.Embedding(0).local_mat
             if ngs.mpi_world.rank == 0:
                 print("\n===\nCONVERT 1")
                 sys.stdout.flush()
-            emb1 = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = stokes.disc.Vhat, localop = localop and useLocalOp, parmat = False, bonus_intorder_ab = 2,
+            emb1 = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = stokes.disc.Vhat, localop = localop, parmat = False, bonus_intorder_ab = 2,
                                             range_dofs = stokes.disc.Vhat.FreeDofs(self.elint) if projectToFree else None)
             tc1 = stokes.disc.X.Embedding(1).local_mat
             embA = tc0 @ emb0 + tc1 @ emb1
@@ -1298,7 +1311,7 @@ class StokesTemplate():
                 if ngs.mpi_world.rank == 0:
                     print("\n===\nCONVERT 2")
                     sys.stdout.flush()
-                emb2 = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = stokes.disc.Sigma, localop = useLocalOp, parmat = False, bonus_intorder_ab = 2,
+                emb2 = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = stokes.disc.Sigma, localop = localop, parmat = False, bonus_intorder_ab = 2,
                                                 range_dofs = stokes.disc.Sigma.FreeDofs(self.elint) if projectToFree else None, trial_cf = sig)
                 tc2 = stokes.disc.X.Embedding(2).local_mat
                 print("ADD EMB2")
@@ -1314,7 +1327,7 @@ class StokesTemplate():
                 if ngs.mpi_world.rank == 0:
                     print("\n===\nCONVERT 3")
                     sys.stdout.flush()
-                emb3 = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = stokes.disc.S, localop = useLocalOp, parmat = False, bonus_intorder_ab = 2,
+                emb3 = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = stokes.disc.S, localop = localop, parmat = False, bonus_intorder_ab = 2,
                                                 range_dofs = stokes.disc.S.FreeDofs(self.elint) if projectToFree else None, trial_cf = cu)
                 tc3 = stokes.disc.X.Embedding(3).local_mat
                 print("ADD EMB3")
@@ -1455,6 +1468,7 @@ class StokesTemplate():
 
 
         def SetUpAuxStokesAMG (self, stokes, amg_opts = dict(), **kwargs):
+
             if not _ngsAMG:
                 raise Exception("Stokes AMG only available with NgsAMG!")
 
@@ -1477,7 +1491,7 @@ class StokesTemplate():
             useAuxSpaceBLF = False
             directAuxInv = False
 
-            embA = self.AuxToMCSEmbedding(stokes, self.Vaux, localop=False, allops=False, projectN=projectN, asSparse=False, projectToFree=True)
+            embA = self.AuxToMCSEmbedding(stokes, self.Vaux, localop=True, allops=False, projectN=projectN, asSparse=False, projectToFree=True)
 
             for opt, val in amg_opts.items():
                 if callable(val):
@@ -1547,10 +1561,10 @@ class StokesTemplate():
                     aux_pre = auxMat.Inverse(self.Vaux.FreeDofs(self.elint))
                 else:
                     aux_pre = amg_cl(fes=self.Vaux,
-                                        freedofs=self.Vaux.FreeDofs(self.elint),
-                                        mat=auxMat,
-                                        weight_mat=a_aux_nodiv.mat,
-                                        **amg_opts)
+                                     freedofs=self.Vaux.FreeDofs(self.elint),
+                                     mat=auxMat,
+                                     weight_mat=a_aux_nodiv.mat if use_nodiv else auxMat,
+                                     **amg_opts)
 
                 embAT = embA.T
 
@@ -1580,7 +1594,10 @@ class StokesTemplate():
             # # quit()
             # quit()
 
-            sm_blocks = ["F", "C"][0:1 if self.elint else 2]
+            if False:#stokes.disc.hodivfree:
+                sm_blocks = []
+            else:
+                sm_blocks = ["F", "C"][0:1 if self.elint else 2]
             # sm_blocks = ["facet"]
             # self.Apre = embA @ aux_pre @ embA.T
             # self.Apre = embA@aux_pre@embA.T
@@ -1684,6 +1701,7 @@ class StokesTemplate():
             self.settings = FlowOptions(**flow_opts)
         else:
             raise Exception("need either flow_settings or flow_opts!")
+
 
         # spaces, forms
         avail_discs = { "mcs" : lambda settings, kwa : MCS(settings=settings, **kwa),
@@ -1833,8 +1851,11 @@ class StokesTemplate():
             # ngs.solvers.MinRes(mat = self.la.M, rhs = rhs_vec, sol = sol_vec, pre = self.la.Mpre,
                                # tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms)
             # nits = -1
+
+            # note: szpc does not work here, MINRES needs symm. & pos. semi-definite!
             minres = MinResSolver(M = self.la.M, Mhat = self.la.Mpre, maxsteps=ms, tol=tol,
                                   printrates = pr, rel_err = rel_err)#, innerproduct = nip)
+
             # pre-iterate
             if presteps > 0:
                 minres.maxsteps = presteps
