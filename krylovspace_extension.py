@@ -378,14 +378,16 @@ class MinResSolver(IterativeSolver):
             # this can be -eps when we plug in a direct solver as preconditioner
             gamma_new_sq = ngs.InnerProduct(z_new, v_new)
 
+            # we are cheating if gamma_new is -eps, in which case we return before it matters anyways
+            gamma_new_sq = abs(gamma_new_sq)
+
             alpha0 = c * delta - c_old * s * gamma    
             alpha1 = sqrt(alpha0 * alpha0 + gamma_new_sq) #**
             alpha2 = s * delta + c_old * c * gamma
             alpha3 = s_old * gamma
 
             c_new = alpha0/alpha1
-            # we are cheating if gamma_new is -eps, in which case we return enyways before it matters
-            s_new = sqrt(abs(gamma_new_sq))/alpha1
+            s_new = sqrt(gamma_new_sq)/alpha1
 
             w_new.data = z - alpha3 * w_old - alpha2 * w
             w_new.data = 1/alpha1 * w_new   
