@@ -900,41 +900,39 @@ class StokesTemplate():
             ## with static condensation + hodivfree, we can iterate on the schur complement
             self.it_on_sc = self.elint and stokes.disc.hodivfree
             # self.it_on_sc = True# self.elint and stokes.disc.hodivfree
+            # self.it_on_sc = False
 
             self.need_bp_scale = True
 
             self.block_la = pc_ver != "direct"
+            self.blockPC = pc_ver == "block"
 
             self.pc_avail = { "direct"      : lambda astokes, opts : self.PCSetUpDirect(astokes, **opts),
                               "block"       : lambda astokes, opts : self.PCSetUpBlock(astokes, **opts),
                               "none"        : lambda astokes, opts : self.PCSetUpDummy(astokes) }
 
-            # preconditionsers that set up from BLF
+            if not pc_ver in self.pc_avail:
+                raise Exception("invalid PC version!")
+
+            # A-block preconditionsers that set up BEFORE assembling from BLFs
             self.pc_a_avail_pre = { "stokesAMG" : lambda astokes, opts : self.SetUpHDivStokesAMG(astokes, **opts) }
 
-            # preconditionsers that set up from assembled matrix
-            self.pc_a_avail_post = { "direct"       : lambda astokes, opts : self.SetUpADirect(astokes, **opts),
-                                     "auxh1"        : lambda astokes, opts : self.SetUpAAux(astokes, **opts),
-                                     "auxStokesAMG"    : lambda astokes, opts : self.SetUpAuxStokesAMG(astokes, **opts), }
+            # A-block preconditionsers that set up AFTER assembling from matrices
+            self.pc_a_avail_post = { "direct"        : lambda astokes, opts : self.SetUpADirect(astokes, **opts),
+                                     "auxh1"         : lambda astokes, opts : self.SetUpAAux(astokes, **opts),
+                                     "auxStokesAMG"  : lambda astokes, opts : self.SetUpAuxStokesAMG(astokes, **opts)}
 
-            # make sure input is OK
-            if self.block_la:
-                if not "a_opts" in pc_opts:
-                    pc_opts["a_opts"] = dict
-                if not "type" in pc_opts["a_opts"]:
-                    pc_opts["a_opts"]["type"] = direct
-
-                aver = pc_opts["a_opts"]["type"]
-
-                if not aver in self.pc_a_avail_pre and not aver in self.pc_a_avail_post:
-                    raise Exception(f"Invalid A-block preconditioner type {aver}")
+            # make sure input is in correct format
+            self.parseInput(pc_opts)
 
             # define forms & physical quantities 
             self.preSetUp(stokes)
 
+            preAssemblePC = self.blockPC and ( pc_opts["a_opts"]["type"] in self.pc_a_avail_pre )
+
             # define A-preconditioner if it is set up from unassembled BLF
-            if self.block_la and ( aver in self.pc_a_avail_pre ):
-                    self.pc_a_avail_pre[aver](stokes, pc_opts)
+            if preAssemblePC:
+                self.PCSetUpBlock(stokes, **pc_opts, preAssemble=True) # unpack dict!!
                     
             # assemble stuff
             self.Assemble()
@@ -942,14 +940,25 @@ class StokesTemplate():
             # harmonic extension for assembled operators
             self.HexFWOps()
 
-            # preconditioner setup
-            if not pc_ver in self.pc_avail:
-                raise Exception("invalid PC version!")
-            else:
-                self.pc_avail[pc_ver](stokes, pc_opts)
+            if not preAssemblePC:
+                self.pc_avail[pc_ver](stokes, pc_opts) # pc_avail unpacks dict!!
 
             # harmonic extenstion for precond
             self.HexBWOps()
+
+
+        def parseInput(self, pc_opts):
+            # make sure input is OK
+            if self.block_la:
+                if not "a_opts" in pc_opts:
+                    pc_opts["a_opts"] = dict
+                if not "type" in pc_opts["a_opts"]:
+                    pc_opts["a_opts"]["type"] = "direct"
+
+                aver = pc_opts["a_opts"]["type"]
+
+                if not aver in self.pc_a_avail_pre and not aver in self.pc_a_avail_post:
+                    raise Exception(f"Invalid A-block preconditioner type {aver}")
 
         def preSetUp(self, stokes):
             # forms
@@ -1154,21 +1163,51 @@ class StokesTemplate():
                 # self.Spre = 1.0/(lams2[0] * 0.9) * self.Spre
 
 
-        def PrepRHS(self, rhs_vec):
+        def PrepSolveVectors(self, stokes):
+            rhs_vec = self.rhs_vec.CreateVector()
+            rhs_vec.data = self.rhs_vec
+
+            homogenize = len(stokes.settings.inlet)>0 and stokes.settings.uin is not None
+
+            if homogenize:
+                sol_vec = self.sol_vec.CreateVector()
+
+                self.velocity.Set(stokes.settings.uin,
+                                  definedon=stokes.settings.mesh.Boundaries(stokes.settings.inlet))
+
+                self.velhat.Set(stokes.settings.uin,
+                                definedon=stokes.settings.mesh.Boundaries(stokes.settings.inlet))
+
+                rhs_vec.data -= self.M * self.sol_vec
+            else:
+                sol_vec = self.sol_vec
+
             if self.elint and self.it_on_sc:
-                rv = rhs_vec[0] if self.block_la else rhs_vec
-                rv.Distribute()
-                rv.local_vec.data += self.a.harmonic_extension_trans.local_mat * rv.local_vec
+                    rv = rhs_vec[0] if self.block_la else rhs_vec
+                    rv.Distribute()
+                    rv.local_vec.data += self.a.harmonic_extension_trans.local_mat * rv.local_vec
+
+            return (sol_vec,rhs_vec)
 
 
-        def ExtendSol(self, sol_vec, rhs_vec):
+        def ExtendSol(self, stokes, sol_vec, rhs_vec):
+
+            homogenize = len(stokes.settings.inlet)>0 and stokes.settings.uin is not None
+
+            # !! homogenize before harmonic extension!
+            if homogenize:
+                self.sol_vec.data += sol_vec
+
             if self.elint and self.it_on_sc:
-                sv = sol_vec[0] if self.block_la else sol_vec
+                sv = self.sol_vec[0] if self.block_la else sol_vec
                 rv = rhs_vec[0] if self.block_la else rhs_vec
                 rv.Distribute()
                 sv.Cumulate()
                 sv.local_vec.data += self.a.inner_solve.local_mat * rv.local_vec
                 sv.local_vec.data += self.a.harmonic_extension.local_mat * sv.local_vec
+
+            # if homogenize:
+            #     self.sol_vec.data += sol_vec
 
 
         def PCSetUpDirect(self, stokes, inv_type = None, **kwargs):
@@ -1194,7 +1233,7 @@ class StokesTemplate():
                         self.Mpre = ( Ihex @ self.Mpre @ Ihext ) + Isolve
 
 
-        def PCSetUpBlock(self, stokes, a_opts = { "type" : "direct" } , **kwargs):
+        def PCSetUpBlock(self, stokes, a_opts = { "type" : "direct" } , preAssemble=False, **kwargs):
             if not self.block_la:
                 raise Exception("block-PC with big compond space todo")
             else:
@@ -1209,13 +1248,14 @@ class StokesTemplate():
                 # self.Spre = ngs.Preconditioner(self.massp, "direct")
                 self.Spre = ngs.Preconditioner(self.massp, "local")
 
-                self.massp.Assemble()
+                aver = a_opts["type"]
 
-                aver = a_opts["type"] if "type" in a_opts else "direct"
-                if aver in self.pc_a_avail_post:
-                    self.pc_a_avail_post[aver](stokes, a_opts)
+                if preAssemble:
+                    self._to_assemble.append( ("massp", self.massp) )
+                    self.pc_a_avail_pre[aver](stokes, a_opts)
                 else:
-                    raise Exception("invalid pc type for A block!")
+                    self.massp.Assemble()
+                    self.pc_a_avail_post[aver](stokes, a_opts)
 
                 self.ASpre = self.Apre
 
@@ -1606,13 +1646,18 @@ class StokesTemplate():
                                                      elint=self.elint, sm_nsteps=2, sm_symm=False)
 
 
-        def SetUpHDivStokesAMG (self, stoeks, amg_opts = dict(), **kwargs):
+        def SetUpHDivStokesAMG (self, stokes, amg_opts = dict(), **kwargs):
+            print(f"\n   _ngsAMG = {_ngsAMG} \n\n")
             if not _ngsAMG:
                 raise Exception("Stokes AMG only available with NgsAMG!")
 
-            if not stokes.disc.hodivfree:
-                raise Exception("Should set hodivfree=True with Stokes-AMG, hodivfree=False is untested!")
+            # if not stokes.disc.hodivfree:
+            #     raise Exception("Should set hodivfree=True with Stokes-AMG, hodivfree=False is untested!")
 
+            for opt, val in amg_opts.items():
+                if callable(val):
+                    amg_opts[opt] = val(self.a2.space)
+            
             amg_cl = NgsAMG.stokes_hdiv_gg_2d if stokes.settings.mesh.dim == 2 else NgsAMG.stokes_hdiv_gg_3d
 
             amg_pc = amg_cl(self.a2, **amg_opts)
@@ -1736,25 +1781,27 @@ class StokesTemplate():
     def AssembleLinAlg(self):
         self.la.Assemble()
 
-    def Solve(self, tol = 1e-8, ms = 1000, rel_err = True, solver = "minres", presteps = 0, use_sz = False, printrates = None,
-              restart = 10000):
+    def PrepSolveVectors(self):
+        return self.la.PrepSolveVectors(self)
+
+    def PostSolve(self, sol_vec, rhs_vec):
+         self.la.ExtendSol(self, sol_vec=sol_vec, rhs_vec=rhs_vec)
+
+
+    def Solve(self,
+              tol = 1e-8,
+              ms = 1000,
+              rel_err = True,
+              solver = "minres",
+              presteps = 0,
+              use_sz = False,
+              printrates = None,
+              restart = 10000,
+              gmres_A_ex = False):
 
         pr = ngs.mpi_world.rank==0 if printrates is None else printrates
 
-        homogenize = len(self.settings.inlet)>0 and self.settings.uin is not None
-
-        rhs_vec = self.la.rhs_vec.CreateVector()
-        rhs_vec.data = self.la.rhs_vec
-        self.la.PrepRHS(rhs_vec = rhs_vec)
-        if homogenize:
-            sol_vec = self.la.sol_vec.CreateVector()
-            self.velocity.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inlet))
-            self.velhat.Set(self.settings.uin, definedon=self.settings.mesh.Boundaries(self.settings.inlet))
-            rhs_vec.data -= self.la.M * self.la.sol_vec
-        else:
-            sol_vec = self.la.sol_vec
-
-        self.la.PrepRHS(rhs_vec = rhs_vec)
+        sol_vec,rhs_vec = self.PrepSolveVectors()
 
         if hasattr(self.la, "rblf_x"): # apply pc hack workaround
             RMAT = ngs.BlockMatrix([[self.la.rblf_x.mat.local_mat.CreateDiagonal(), None],
@@ -1799,13 +1846,21 @@ class StokesTemplate():
             #                       [ -self.la.B @ self.la.Apre, ngs.IdentityMatrix(self.la.Spre.height) ] ])
             # szpre = A @ B
 
+            if gmres_A_ex:
+                Ainv = ngs.krylovspace.CGSolver(mat=self.la.A, pre=self.la.Apre, tol=1e-6, printrates=True)
+                if use_sz:
+                    pc = SZPC(M = self.la.M, Ahat = Ainv, Shat = self.la.Spre)
+                else:
+                    pc = ngs.BlockMatrix( [ [Ainv, None], [None, self.la.Spre] ])
+            else:
+                if use_sz:
+                    pc = SZPC(M = self.la.M, Ahat = self.la.Apre, Shat = self.la.Spre)
+                else:
+                    pc = self.la.Mpre
+
             def myCB (it, err):
                 sys.stdout.flush()
 
-            if use_sz:
-                pc = SZPC(M = self.la.M, Ahat = self.la.Apre, Shat = self.la.Spre)
-            else:
-                pc = self.la.Mpre
             gmres = GMResSolver(M = self.la.M, Mhat = pc, maxsteps=ms, tol=tol,
                                 printrates = pr, rel_err = rel_err, restart=restart, innerproduct = nip,
                                 callback=myCB)
@@ -1874,11 +1929,7 @@ class StokesTemplate():
         else:
             raise Exception("Use bp, gmres or minres as Solver!")
 
-
-        if homogenize:
-            self.la.sol_vec.data += sol_vec
-
-        self.la.ExtendSol(sol_vec = self.la.sol_vec, rhs_vec = rhs_vec)
+        self.PostSolve(sol_vec, rhs_vec)
 
         # for k, comp in enumerate(self.la.gfu.components):
         #     print("SOL comp", k)
