@@ -244,7 +244,7 @@ class AuxiliarySpacePreconditioner(ngs.BaseMatrix):
         for facet in V.mesh.facets:
             V0 = V.components[0]
 
-            # exclude lowest-order DOF of facet            
+            # exclude lowest-order DOF of facet
             block = list( dof for dof in V0.GetDofNrs(facet) if dof>=0 and self.freedofs[dof])
             if len(block):
                 block = block[1:]
@@ -254,7 +254,7 @@ class AuxiliarySpacePreconditioner(ngs.BaseMatrix):
                     cellid = ngs.NodeId(ngs.ELEMENT, elid.nr)
                     block = list( dof for dof in V0.GetDofNrs(cellid) if dof>=0 and self.freedofs[dof])
 
-            # also exclude tang-facet lowest order DOFs 
+            # also exclude tang-facet lowest order DOFs
             V1 = V.components[1]
             if V1.globalorder > 0:
                 off1 = V.Range(1).start
@@ -970,7 +970,7 @@ class StokesTemplate():
             # make sure input is in correct format
             self.parseInput(pc_opts)
 
-            # define forms & physical quantities 
+            # define forms & physical quantities
             self.preSetUp(stokes)
 
             preAssemblePC = self.blockPC and ( pc_opts["a_opts"]["type"] in self.pc_a_avail_pre )
@@ -978,7 +978,7 @@ class StokesTemplate():
             # define A-preconditioner if it is set up from unassembled BLF
             if preAssemblePC:
                 self.PCSetUpBlock(stokes, **pc_opts, preAssemble=True) # unpack dict!!
-                    
+
             # assemble stuff
             self.Assemble()
 
@@ -1708,7 +1708,7 @@ class StokesTemplate():
             for opt, val in amg_opts.items():
                 if callable(val):
                     amg_opts[opt] = val(self.a2.space)
-            
+
             amg_cl = NgsAMG.stokes_hdiv_gg_2d if stokes.settings.mesh.dim == 2 else NgsAMG.stokes_hdiv_gg_3d
 
             amg_pc = amg_cl(self.a2, **amg_opts)
