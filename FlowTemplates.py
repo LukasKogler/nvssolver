@@ -159,7 +159,8 @@ class AuxiliarySpacePreconditioner(ngs.BaseMatrix):
         self._block_makers = { "F"   : self.MakeFacetBlocks,    # facets
                                "C"   : self.MakeCellBlocks,     # cells
                                "F+C" : self.MakeFCBlocks,       # facets + appended cells
-                               "EL"  : self.MakeElementBlocks } # elements
+                               "EL"  : self.MakeElementBlocks,
+                               "HO_FC": self.MakeHOFCBlocks } # elements
         self.SetUpSmoother(sm_blocks, sm_nsteps, sm_nsteps_loc,
                            sm_symm, sm_symm_loc, mpi_thread)
         self.Finalize()
@@ -232,6 +233,36 @@ class AuxiliarySpacePreconditioner(ngs.BaseMatrix):
                 for elid in facet.elements:
                     cellid = ngs.NodeId(ngs.ELEMENT, elid.nr)
                     block = list( dof for dof in V.GetDofNrs(cellid) if dof>=0 and self.freedofs[dof])
+            if len(block):
+                blocks.append(block)
+        return blocks
+
+    def MakeHOFCBlocks(self):
+        blocks = []
+        V = self.blf.space
+        dim = V.mesh.dim
+        for facet in V.mesh.facets:
+            V0 = V.components[0]
+
+            # exclude lowest-order DOF of facet            
+            block = list( dof for dof in V0.GetDofNrs(facet) if dof>=0 and self.freedofs[dof])
+            if len(block):
+                block = block[1:]
+
+            if not self.elint: # if elint, no need to check these - len(block) will be 0!
+                for elid in facet.elements:
+                    cellid = ngs.NodeId(ngs.ELEMENT, elid.nr)
+                    block = list( dof for dof in V0.GetDofNrs(cellid) if dof>=0 and self.freedofs[dof])
+
+            # also exclude tang-facet lowest order DOFs 
+            V1 = V.components[1]
+            if V1.globalorder > 0:
+                off1 = V.Range(1).start
+                addDofs = list( off1 + dof for dof in V1.GetDofNrs(facet) if dof>=0 and self.freedofs[off1+dof])
+                # block = block + addDofs[2:]
+                if len(addDofs) > dim:
+                    block = block + addDofs[dim:]
+
             if len(block):
                 blocks.append(block)
         return blocks
@@ -499,9 +530,13 @@ class FlowDiscretization:
 
 class HDG(FlowDiscretization):
     def __init__(self, settings = None, order = 2, hodivfree = False, compress = True, truecompile = False, \
-                 pq_reg = 0, divdivpen = 0, bonus_intorder_rhs = 0, stab_alpha = 6.0, vhat_outlet_diri = False):
+                 pq_reg = 0, divdivpen = 0, bonus_intorder_rhs = 0, stab_alpha = 6.0, vhat_outlet_diri = False,
+                 RT=False, trace_sigma=False):
 
         super(HDG, self).__init__(settings, order, compress, truecompile, pq_reg, divdivpen, bonus_intorder_rhs)
+
+        if RT:
+            print("Note: HDG RT not supported, using BDM!")
 
         self.hodivfree = hodivfree
         self.alpha = stab_alpha
@@ -581,19 +616,29 @@ class HDG(FlowDiscretization):
 
         Du = self.Eps(u) if self.sym else ngs.Grad(u)
         Dv = self.Eps(v) if self.sym else ngs.Grad(v)
-        self.a_vol = self.nueff * ngs.InnerProduct(Du,Dv)
-        self.a_bnd = self.nueff * ( self.alpha/self.h *  ngs.InnerProduct(self.tang(uhat-u), self.tang(vhat-v)) \
-                                    + ngs.InnerProduct(Du * self.n, self.tang(vhat-v)) \
-                                    + ngs.InnerProduct(Dv * self.n, self.tang(uhat-u)) )
-        if self.WHDiv:
-            self.a_bnd += self.nueff * self.h *  ngs.InnerProduct( (self.Curl(u) - omega) * self.n , (self.Curl(v) - eta) * self.n )
-        if self.settings.l2_coef is not None:
-            slef.a_vol += self.settings.l2_coef * u * v * dx
-        self.b_vol = -ngs.div(u) * q
-        self.bt_vol = -ngs.div(v) * p
+
         self.divdiv = ngs.div(u) * ngs.div(v)
         self.uv = ngs.InnerProduct(u, v)
         self.uhvh = ngs.InnerProduct(self.tang(uhat), self.tang(vhat))
+
+        self.a_vol = self.nueff * ngs.InnerProduct(Du,Dv)
+
+        if self.ddp != 0.0:
+            self.a_vol += self.ddp * self.nueff * ngs.div(u)*ngs.div(v)
+
+        self.a_bnd = self.nueff * ( self.alpha/self.h *  ngs.InnerProduct(self.tang(uhat-u), self.tang(vhat-v)) \
+                                    + ngs.InnerProduct(Du * self.n, self.tang(vhat-v)) \
+                                    + ngs.InnerProduct(Dv * self.n, self.tang(uhat-u)) )
+
+        if self.WHDiv:
+            self.a_bnd += self.nueff * self.h *  ngs.InnerProduct( (self.Curl(u) - omega) * self.n , (self.Curl(v) - eta) * self.n )
+
+        if self.settings.l2_coef is not None:
+            self.a_vol += self.settings.l2_coef * u * v * dx
+
+        self.b_vol = -ngs.div(u) * q
+
+        self.bt_vol = -ngs.div(v) * p
 
         if self.pq_reg != 0:
             self.c_vol = -self.pq_reg * p * q
@@ -677,6 +722,9 @@ class MCS(FlowDiscretization):
 
         # !! EITHER vhat=0 OR sigma_nt=0 on outlet!!
         vh_diri = settings.inlet + "|" + settings.wall_noslip
+
+        # NOTE: VH-DIRI on outlet does not work well with stokes-AMG,
+        #       because then we have facets where V is free and Vhat is DIRI!
         if self.vhat_outlet_diri:
             vh_diri = vh_diri + "|" + settings.outlet
 
@@ -697,21 +745,17 @@ class MCS(FlowDiscretization):
             # self.Sigma = ngs.HCurlDiv(mesh, order=order + 1, discontinuous=True, ordertrace=order) # slower I think
             self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order, \
                             definedon = self.settings.fluid_domain)
-            raise Exception("AAA")
+            raise Exception("RT is not actually tested!!")
         else:
-            if True: # "correct" version
-                # self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, \
-                                                       # dirichlet = settings.inlet + "|" + settings.wall_noslip + "|" + settings.outlet)
-                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, dirichlet = vh_diri, \
-                                                       definedon = self.settings.fluid_domain)
-            else: # works with facet-aux
-                self.Vhat = ngs.TangentialFacetFESpace(settings.mesh, order = self.order-1, dirichlet = vh_diri, \
-                                                       definedon = self.settings.fluid_domain)
+            self.Vhat = ngs.TangentialFacetFESpace(settings.mesh,
+                                                   order = self.order-1,
+                                                   definedon = self.settings.fluid_domain,
+                                                   dirichlet = vh_diri)
+
             self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, \
                                       discontinuous = True, ordertrace = self.order-1 if self.trace_sigma else -1, \
                                       definedon = self.settings.fluid_domain)
-            # self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True)
-            # self.Sigma = ngs.HCurlDiv(settings.mesh, order = self.order-1, orderinner = self.order, discontinuous = True)
+
             self.Q = ngs.L2(settings.mesh, order = 0 if self.hodivfree else order-1, \
                             definedon = self.settings.fluid_domain)
 
@@ -901,6 +945,7 @@ class StokesTemplate():
             self.it_on_sc = self.elint and stokes.disc.hodivfree
             # self.it_on_sc = True# self.elint and stokes.disc.hodivfree
             # self.it_on_sc = False
+            print("it_on_sc = ", self.it_on_sc)
 
             self.need_bp_scale = True
 
@@ -1182,6 +1227,8 @@ class StokesTemplate():
             else:
                 sol_vec = self.sol_vec
 
+            # TODO: should this happen BEFORE homogenization?
+            #       I think it does not matter because it would only change the DIRI entries?
             if self.elint and self.it_on_sc:
                     rv = rhs_vec[0] if self.block_la else rhs_vec
                     rv.Distribute()
@@ -1507,7 +1554,7 @@ class StokesTemplate():
             ## END SetUpAFacet ##
 
 
-        def SetUpAuxStokesAMG (self, stokes, amg_opts = dict(), **kwargs):
+        def SetUpAuxStokesAMG (self, stokes, directAuxInv = False, amg_opts = dict(), **kwargs):
 
             if not _ngsAMG:
                 raise Exception("Stokes AMG only available with NgsAMG!")
@@ -1529,7 +1576,6 @@ class StokesTemplate():
             # Whether to project the normal component to order 0 which makes the embedding facet-wise
             projectN = stokes.disc.order > 0
             useAuxSpaceBLF = False
-            directAuxInv = False
 
             embA = self.AuxToMCSEmbedding(stokes, self.Vaux, localop=True, allops=False, projectN=projectN, asSparse=False, projectToFree=True)
 
@@ -1597,6 +1643,10 @@ class StokesTemplate():
 
                 auxMat = NgsAMG.ToSparseMatrix( sparseEMbT @ self.A @ sparseEMb)
 
+                # print("\n\nsparseEMb\n", sparseEMb, "\n\n")
+                # print("\n\nsparseEMbT\n", sparseEMbT, "\n\n")
+                # print("\n\nauxMat]n", auxMat, "\n\n")
+
                 if directAuxInv:
                     aux_pre = auxMat.Inverse(self.Vaux.FreeDofs(self.elint))
                 else:
@@ -1638,6 +1688,7 @@ class StokesTemplate():
                 sm_blocks = []
             else:
                 sm_blocks = ["F", "C"][0:1 if self.elint else 2]
+            # sm_blocks = ["HO_FC"]
             # sm_blocks = ["facet"]
             # self.Apre = embA @ aux_pre @ embA.T
             # self.Apre = embA@aux_pre@embA.T
@@ -1699,6 +1750,9 @@ class StokesTemplate():
                 S = self.B @ ainv @ self.B.T
             else:
                 S = self.B @ self.Apre @ self.B.T
+
+            if self.c is not None:
+                S = S - self.c.mat
 
             evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-8))
             # evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=ngs.IdentityMatrix(S.height), tol=1e-14))
