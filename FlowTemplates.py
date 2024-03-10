@@ -1766,24 +1766,6 @@ class StokesTemplate():
                 print("cond-nr preS\S:", evs_S[-1]/(evs0))
                 print("----\n")
 
-            # self.Spre = 1.0/evs_S[-1] * self.Spre
-            # self.Spre = 1 * self.Spre
-            # self.Spre = 1.01/evs_S[0] * self.Spre
-            # self.Spre = 0.99/evs_S[-1] * self.Spre
-            # self.Spre = 0.5 * self.Spre
-
-            evs_S = list(ngs.la.EigenValues_Preconditioner(mat=S, pre=self.Spre, tol=1e-14))
-            evs0 = evs_S[0] if evs_S[0] > 1e-4 else evs_S[1]
-
-            if self.a.space.mesh.comm.rank == 0:
-                print("--")
-                print("EVs for Schur Complement")
-                print("min ev. preS\S:", evs_S[0:5])
-                print("max ev. preS\S:", evs_S[-5:])
-                print("cond-nr preS\S:", evs_S[-1]/(evs0))
-                print("----\n")
-            # quit()
-
             ngs.ngsglobals.msg_level = o_ms_l
 
             return evs_A[-1]/evs_A[0], evs_S[-1]/evs0, evs_A, evs_S
