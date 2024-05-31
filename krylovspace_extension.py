@@ -3,6 +3,9 @@ import ngsolve.la as la
 from math import sqrt
 from typing import Optional, Callable
 
+import mpi4py.MPI as mpi
+mpi_world = mpi.COMM_WORLD
+
 
 class IterativeSolver(ngs.BaseMatrix):
     def __init__(self, sysmat, tol : float = 1e-6, maxsteps : int = 3e2, printrates : bool = True, callback : Optional[Callable[[int, float], None]] = None,
@@ -86,7 +89,7 @@ class BPCGSolver(IterativeSolver):
         lams = list(ngs.la.EigenValues_Preconditioner(mat=A, pre=Ahat, tol=tol))
         scal = 1.0 / (lams[0] * 0.95)
         # scal = 1.0 / (lams[-1] * 1.05)
-        if ngs.mpi_world.rank == 0:
+        if mpi_world.rank == 0:
             print("###############################")
             print("scale = ", scal)
             print("condition = ", lams[-1] / lams[0])
@@ -194,7 +197,7 @@ class BPCGSolver(IterativeSolver):
 
         self.timer_its.Stop()
         self.iterations = -int(abs(self.iterations))
-        if ngs.mpi_world.rank==0:
+        if mpi_world.rank==0:
             print("Warning: BPCG did not converge to TOL")
 
 
@@ -318,7 +321,7 @@ class GMResSolver(IterativeSolver):
 
         self.iterations = -int(abs(self.iterations))
         self.calcSolution(m-1, H, Q, beta, sol)
-        if ngs.mpi_world.rank==0:
+        if mpi_world.rank==0:
             print("Warning: GMRes did not converge to TOL")
 
     def Solve(self, rhs : ngs.BaseVector, sol : ngs.BaseVector, initialize : bool = True):
@@ -415,5 +418,5 @@ class MinResSolver(IterativeSolver):
             ResNorm_old = ResNorm
 
         self.iterations = -int(abs(self.iterations))
-        if ngs.mpi_world.rank==0:
+        if mpi_world.rank==0:
             print("Warning: MinRes did not converge to TOL")

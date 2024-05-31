@@ -35,8 +35,8 @@ ngsglobals.msg_level = 1
 #flow_settings = channel2d(maxh=0.2, nu=1e-3, L=40)
 #pqr = 0
 
-flow_settings = ST_3d(maxh=0.2, nu=1e-2)
-flow_settings.mesh.Curve(3)
+flow_settings = ST_3d(maxh=0.3, nu=1, symmetric=False, L=2.5*1)
+# flow_settings.mesh.Curve(3)
 pqr = 0
 
 # flow_settings = vortex2d(maxh=0.025, nu=1)
@@ -51,7 +51,7 @@ print("els " , flow_settings.mesh.ne)
 # quit()
 
 
-disc_opts = { "order" : 2,
+disc_opts = { "order" : 1,
               "hodivfree" : False,
               "truecompile" : False, #mpi_world.size == 1,
               "RT" : False,
@@ -71,8 +71,8 @@ sol_opts = { "elint" : True,
                      # "type" : "auxfacet",
                      "type" : "auxh1", 
                      # "amg_package" : "petsc",
-                     #"amg_package" : "ngs_amg",
-                     "amg_package" : "direct", # direct solve in auxiliary space
+                     "amg_package" : "ngs_amg",
+                    #  "amg_package" : "direct", # direct solve in auxiliary space
                      "aux_mlt" : True,
                      "blk_smoother" : True,
                      "sm_el_blocks" : False,
@@ -118,7 +118,10 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
 
     ts = Timer("solve")
     ts.Start()
-    nits = stokes.Solve(tol=1e-6, ms = 500, solver = "gmres", use_sz = True, rel_err = False)
+    
+    # nits = stokes.Solve(tol=1e-10, ms = 500, solver = "gmres", use_sz = True, rel_err = False)
+    nits = stokes.Solve(tol=1e-8, ms = 500, presteps = 5, solver = "gmres", use_sz = True, rel_err = False, printrates = True)
+    
     ts.Stop()
     #input()
     if mpi_world.rank == 0:
@@ -138,10 +141,10 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
 
     sys.stdout.flush()
 
-    '''
     sol_opts["elint"] = False
     disc_opts["divdivpen"] = 0
     sol_opts["pc_ver"] = "direct"
+    sol_opts["pc_opts"]["inv_type"] = ["masterinverse", "mumps"][1]
     # sol_opts["elint"] = False
     stokesex = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts)
     stokesex.Solve(tol=1e-6, ms = 500, solver = "apply_pc")
@@ -153,6 +156,7 @@ with TaskManager(pajetrace = 50 * 2024 * 1024):
     print("norm err l2 = ", norm_err)
     print("norm err L2 = ", norm_errl2)
 
+    '''
     import matplotlib.pyplot as plt
     plt.semilogy(list(k for k,x in enumerate(stokes.solver.errors)), stokes.solver.errors)
     plt.show()

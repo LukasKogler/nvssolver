@@ -33,23 +33,23 @@ ngsglobals.testout = "test.out"
 # flow_settings = channel2d(maxh=0.01, nu=1e-3, L=1)
 # pqr = 0
 
-# flow_settings = vortex2d(maxh=0.4, nu=1)
+# flow_settings = vortex3d(maxh=0.2, nu=1)
 # pqr = 1e-7
 
 # flow_settings.l2_coef = 1
 
-flow_settings = ST_2d(maxh=0.05, nu=1e-3, symmetric=False)
+# flow_settings = ST_2d(maxh=0.05, nu=1e-3, symmetric=False)
 # flow_settings.mesh.Curve(3)
-pqr = 0
+# pqr = 0
 
 # flow_settings = channel2d(maxh=0.1, nu=1e-3, L=5, nref=1, symmetric=True)
 # pqr = 0
 
-# flow_settings = channel2d(maxh=0.1, nu=1e-3, L=40)
-# pqr = 0
+flow_settings = channel2d(maxh=0.2, nu=1e-3, L=1)
+pqr = 0
 
-# flow_settings = ST_3d(maxh=0.2, nu=1, symmetric=False, L=2.5*1)
-# # flow_settings.mesh.Curve(3)
+# flow_settings = ST_3d(maxh=0.03, nu=1, symmetric=False, L=2.5*1)
+# flow_settings.mesh.Curve(3)
 # pqr = 0
 # flow_settings.wall_noslip = ""
 # flow_settings.inlet = ""
@@ -91,6 +91,7 @@ sao = { "ngs_amg_enable_sp" : False,
         # "ngs_amg_enable_sp_spec" : [ True ],
         # "ngs_amg_check_kvecs" : True,
         "ngs_amg_energy" : "alg",
+        "ngs_amg_crs_alg": "mis",
         "ngs_amg_max_coarse_size" : 100,
         "ngs_amg_max_levels" : 20,
         "ngs_amg_clev" : "inv",
@@ -110,15 +111,15 @@ sao = { "ngs_amg_enable_sp" : False,
         "ngs_amg_cinv_type" : "masterinverse",
         "ngs_amg_hpt_sm" : True, # use Hiptmair smoother 
         "ngs_amg_hpt_sm_ex" : False, # Hiptmair exact solve
-        "ngs_amg_hpt_sm_bs" : False, # Hiptmair Braess-Sarazin
+        "ngs_amg_hpt_sm_bs" : False, # Hiptmair Braess-Sarazin (defunct!)
         "ngs_amg_d2_agg" : True,
         "ngs_amg_d2_agg_spec" : [ True ],
         "ngs_amg_cinv_type_loc" : "sparsecholesky",
-        "ngs_amg_test_smoothers" : False, #len(flow_settings.wall_noslip)>0,
-        "ngs_amg_test_levels" : False, #len(flow_settings.wall_noslip)>0,
-        "ngs_amg_do_test" : True, #len(flow_settings.wall_noslip)>0,
-        "ngs_amg_log_level" : "extra", # "debug"
-        "ngs_amg_log_level_pc" : "extra", #"debug",
+        "ngs_amg_test_smoothers" : [False, True][1], #len(flow_settings.wall_noslip)>0,
+        "ngs_amg_test_levels" :    [False, True][1], #len(flow_settings.wall_noslip)>0,
+        "ngs_amg_do_test" :        [False, True][1], #len(flow_settings.wall_noslip)>0,
+        "ngs_amg_log_level" :    ["extra", "debug"][1],
+        "ngs_amg_log_level_pc" : ["extra", "debug"][1],
         "ngs_amg_agg_print_aggs" : False,
         "ngs_amg_agg_print_vmap" : False,
         "ngs_amg_print_log" : True }
@@ -129,7 +130,7 @@ sol_opts = { "elint" : True,
              "pc_ver" : "block", # "block", "direct"
              "pc_opts" : {
                  "a_opts" : {
-                     "type" : [ "direct", "auxh1", "auxStokesAMG" ][2],
+                     "type" : [ "direct", "auxh1", "auxStokesAMG", "stokesAMG" ][3],
                      "amg_package" : "direct",
                      "mlt_smoother" : True,
                      "blk_smoother" : True,
@@ -149,6 +150,7 @@ def printDofs(name, fes):
     nS = fes.FreeDofs(True).NumSet()
     nDiff = nF - nS
     print(f"{name}:  #dofs = {n}, #dofs free = {nF}, losing {nDiff} in static cond, leaving {nS}")
+    sys.stdout.flush()
 
 SetNumThreads(1)
 with TaskManager():#pajetrace = 50 * 2024 * 1024):
@@ -188,7 +190,7 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
 
 
     stokes.la.TestBlock()
-    # quit()
+    quit()
 
     X = stokes.disc.X
     Q = stokes.disc.X
@@ -238,35 +240,39 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
     # if sol_opts["pc_ver"] == "block":
        # stokes.la.TestBlock()
 
+
     # quit()
 
 SetNumThreads(1)
 # with TaskManager(pajetrace = 50 * 2024 * 1024):
 
-ts = Timer("solve")
-ts.Start()
+tsol = Timer("solve")
+tsol.Start()
 # nits = stokes.Solve(tol=1e-6, ms = 100, presteps = 0, solver = "minres", use_sz = False, rel_err = False, printrates = True)
-nits = stokes.Solve(tol=1e-12, ms = 500, presteps = 0, solver = "gmres", use_sz = True, rel_err = False, printrates = True)
+# nits = stokes.Solve(tol=1e-8, ms = 500, presteps = 0, solver = "gmres", use_sz = True, rel_err = False, printrates = True)
+nits = stokes.Solve(tol=1e-8, ms = 500, presteps = 0, solver = "minres", use_sz = False, rel_err = False, printrates = True)
 # nits = 0
-ts.Stop()
+tsol.Stop()
+
+if mpi_world.rank == 0:
+    print("\n---")
+    print("els ", stokes.disc.X.mesh.ne)
+    print("A dofs  ", stokes.disc.X.ndofglobal)
+    print("Q dofs  ", stokes.disc.Q.ndofglobal)
+    print("nits = ", nits)
+    print("---\ntime setup", tsup.time)
+    print("A+Q dofs", stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal)
+    print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (tsup.time * mpi_world.size) / 1000, "K" ) 
+    print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (tsup.time * mpi_world.size) / 1000, "K" ) 
+    print("---\ntime solve", tsol.time)
+    print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (tsol.time * mpi_world.size) / 1000, "K" ) 
+    print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (tsol.time * mpi_world.size) / 1000, "K" ) 
+    print("---\n")
 
 SetNumThreads(1)
 with TaskManager():#pajetrace = 50 * 2024 * 1024):
     #input()
-    if mpi_world.rank == 0:
-        print("\n---")
-        print("els ", stokes.disc.X.mesh.ne)
-        print("A dofs  ", stokes.disc.X.ndofglobal)
-        print("Q dofs  ", stokes.disc.Q.ndofglobal)
-        print("nits = ", nits)
-        print("---\ntime setup", tsup.time)
-        print("A+Q dofs", stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal)
-        print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (tsup.time * mpi_world.size) / 1000, "K" ) 
-        print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (tsup.time * mpi_world.size) / 1000, "K" ) 
-        print("---\ntime solve", ts.time)
-        print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (ts.time * mpi_world.size) / 1000, "K" ) 
-        print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (ts.time * mpi_world.size) / 1000, "K" ) 
-        print("---\n")
+
 
     sys.stdout.flush()
 
@@ -276,10 +282,35 @@ with TaskManager():#pajetrace = 50 * 2024 * 1024):
     sol_opts["pc_opts"]["inv_type"] = ["masterinverse", "mumps"][1]
     # # sol_opts["elint"] = False
 
-    stokesex = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts)
-    stokesex.Solve(tol=1e-6, ms = 500, solver = "apply_pc", printrates=True)
+    tsupex = Timer("sup")
+    tsupex.Start()
 
-    # quit()
+    stokesex = StokesTemplate(disc_opts = disc_opts, flow_settings = flow_settings, sol_opts = sol_opts)
+
+    tsupex.Stop()
+
+
+    tsolex = Timer("sup")
+    tsolex.Start()
+
+    stokesex.Solve(tol=1e-12, ms = 500, solver = "apply_pc", printrates=True)
+
+    tsolex.Stop()
+
+    if mpi_world.rank == 0:
+        print("\n---")
+        print("els ", stokes.disc.X.mesh.ne)
+        print("A dofs  ", stokes.disc.X.ndofglobal)
+        print("Q dofs  ", stokes.disc.Q.ndofglobal)
+        print("nits = ", nits)
+        print("---\ntime setup", tsupex.time)
+        print("A+Q dofs", stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal)
+        print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (tsupex.time * mpi_world.size) / 1000, "K" ) 
+        print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (tsupex.time * mpi_world.size) / 1000, "K" ) 
+        print("---\ntime solve", tsolex.time)
+        print("A dofs/(sec * proc)", stokes.disc.X.ndofglobal / (tsolex.time * mpi_world.size) / 1000, "K" ) 
+        print("A+Q dofs/(sec * proc)", (stokes.disc.X.ndofglobal + stokes.disc.Q.ndofglobal) / (tsolex.time * mpi_world.size) / 1000, "K" ) 
+        print("---\n")
 
     err = GridFunction(stokes.disc.V)
     err.vec.data = stokes.velocity.vec - stokesex.velocity.vec

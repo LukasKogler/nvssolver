@@ -5,6 +5,9 @@ import netgen as ng
 # from krylovspace_extension import BPCGSolver
 from krylovspace_extension import BPCGSolver, GMResSolver, MinResSolver
 
+import mpi4py.MPI as mpi
+mpi_world = mpi.COMM_WORLD
+
 
 _ngsAMG = True
 try:
@@ -21,7 +24,7 @@ except:
 # _ngs_petsc = False
 
 def myPrint(*args, masterOnly=True, sync=False):
-    if ( not masterOnly ) or ( ngs.mpi_world.rank == 0 ):
+    if ( not masterOnly ) or ( mpi_world.rank == 0 ):
         print(*args)
         sys.stdout.flush()
 
@@ -40,10 +43,10 @@ def MakeFacetBlocks(V, freedofs=None):
     return blocks
 
 def hangCheck(prompt):
-    if ngs.mpi_world.rank == 0:
+    if mpi_world.rank == 0:
         print("barrier for at ", prompt)
-    ngs.mpi_world.Barrier()
-    if ngs.mpi_world.rank == 0:
+    mpi_world.Barrier()
+    if mpi_world.rank == 0:
         input(prompt)
 
 ### Misc Utilities ###
@@ -847,9 +850,10 @@ class MCS(FlowDiscretization):
                        - (sigma * self.n) * self.tang(vhat) \
                        - (tau * self.n) * self.tang(uhat)
         if self.settings.l2_coef is not None:
-            raise Exception("Sorry, not sure l2 coef is implemented correctly???")
+            # raise Exception("Sorry, not sure l2 coef is implemented correctly???")
+            print("Sorry, not sure l2 coef is implemented correctly???")
             self.a_vol += self.settings.l2_coef * ngs.InnerProduct(u, v)
-            self.a_bnd += self.settings.l2_coef * ngs.InnerProduct(self.tang(uhat), self.tang(vhat))
+            # self.a_bnd += self.settings.l2_coef * ngs.InnerProduct(self.tang(uhat), self.tang(vhat))
         self.b_vol = -ngs.div(u) * q
         self.bt_vol = -ngs.div(v) * p
 
@@ -1119,7 +1123,7 @@ class StokesTemplate():
         def Assemble(self):
             for name, x in self._to_assemble:
                 if x is not None:
-                    if ngs.mpi_world.rank == 0:
+                    if mpi_world.rank == 0:
                         print("\n===\nassemble {}\n===".format(name))
                         sys.stdout.flush()
                     t = ngs.Timer("assemble {}".format(name))
@@ -1128,7 +1132,7 @@ class StokesTemplate():
                     x.Assemble()
                     x.space.mesh.comm.Barrier()
                     t.Stop()
-                    if ngs.mpi_world.rank == 0:
+                    if mpi_world.rank == 0:
                         print("\n===\nassembling {} took {} sec\n===".format(name, t.time))
                         sys.stdout.flush()
 
@@ -1313,7 +1317,7 @@ class StokesTemplate():
 
         def SetUpADirect (self, stokes, inv_type = None, **kwargs):
             if inv_type is None:
-                if ngs.mpi_world.size > 1:
+                if mpi_world.size > 1:
                     ainvt = "mumps"
                 else:
                     ainvt = "sparsecholesky" if stokes.disc.compress else "umfpack"
@@ -1356,7 +1360,7 @@ class StokesTemplate():
         def AuxToMCSEmbedding (self, stokes, Vaux, localop=True, allops=False, projectN=False, asSparse=False, projectToFree=True):
             u, v = stokes.disc.V.TnT()
 
-            if ngs.mpi_world.rank == 0:
+            if mpi_world.rank == 0:
                 print("\n===\nCONVERT 0")
                 sys.stdout.flush()
 
@@ -1384,7 +1388,7 @@ class StokesTemplate():
                                                 range_dofs = stokes.disc.V.FreeDofs(self.elint) if projectToFree else None)
 
             tc0 = stokes.disc.X.Embedding(0).local_mat
-            if ngs.mpi_world.rank == 0:
+            if mpi_world.rank == 0:
                 print("\n===\nCONVERT 1")
                 sys.stdout.flush()
             emb1 = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = stokes.disc.Vhat, localop = localop, parmat = False, bonus_intorder_ab = 2,
@@ -1395,7 +1399,7 @@ class StokesTemplate():
             if not stokes.disc.compress:
                 G2E = lambda G : 0.5 * (G + G.trans)
                 sig = -stokes.disc.nueff * G2E(ngs.Grad(Vaux.TrialFunction()))
-                if ngs.mpi_world.rank == 0:
+                if mpi_world.rank == 0:
                     print("\n===\nCONVERT 2")
                     sys.stdout.flush()
                 emb2 = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = stokes.disc.Sigma, localop = localop, parmat = False, bonus_intorder_ab = 2,
@@ -1411,7 +1415,7 @@ class StokesTemplate():
                 # G2Cu = lambda G : - 2 * Skew2Vec(G)
                 cu = G2Cu(ngs.Grad(V.TrialFunction()))
                 # V is H1, so curl is in HDiv -> localop=True and C2C is fine!
-                if ngs.mpi_world.rank == 0:
+                if mpi_world.rank == 0:
                     print("\n===\nCONVERT 3")
                     sys.stdout.flush()
                 emb3 = ngs.comp.ConvertOperator(spacea = Vaux, spaceb = stokes.disc.S, localop = localop, parmat = False, bonus_intorder_ab = 2,
@@ -1422,7 +1426,7 @@ class StokesTemplate():
             if Vaux.mesh.comm.size > 1:
                 embA = ngs.ParallelMatrix(embA, row_pardofs = Vaux.ParallelDofs(), col_pardofs = stokes.disc.X.ParallelDofs(),
                                           op = ngs.ParallelMatrix.C2C if localop else ngs.ParallelMatrix.C2D)
-            if ngs.mpi_world.rank == 0:
+            if mpi_world.rank == 0:
                 print("\n===\nCONVERT DONE")
                 sys.stdout.flush()
             if asSparse:
@@ -1473,7 +1477,7 @@ class StokesTemplate():
             # a_aux.Assemble()
             # a_aux.space.mesh.comm.Barrier()
             # t.Stop()
-            # if ngs.mpi_world.rank == 0:
+            # if mpi_world.rank == 0:
             #     print("\n===\nassembling NOPC AUX SPACE took {} sec\n===".format(t.time))
             #     sys.stdout.flush()
 
@@ -1501,7 +1505,7 @@ class StokesTemplate():
 
             a_aux.space.mesh.comm.Barrier()
             t.Stop()
-            if ngs.mpi_world.rank == 0:
+            if mpi_world.rank == 0:
                 print("\n===\nassembling AUX SPACE took {} sec\n===".format(t.time))
                 sys.stdout.flush()
 
@@ -1621,7 +1625,7 @@ class StokesTemplate():
 
                 self.Vaux.mesh.comm.Barrier()
                 t.Stop()
-                if ngs.mpi_world.rank == 0:
+                if mpi_world.rank == 0:
                     print("\n===\nassembling AUX SPACE (STOKES AMG) took {} sec\n===".format(t.time))
                     sys.stdout.flush()
 
@@ -1835,7 +1839,7 @@ class StokesTemplate():
               restart = 10000,
               gmres_A_ex = False):
 
-        pr = ngs.mpi_world.rank==0 if printrates is None else printrates
+        pr = mpi_world.rank==0 if printrates is None else printrates
 
         sol_vec,rhs_vec = self.PrepSolveVectors()
 
@@ -1844,7 +1848,7 @@ class StokesTemplate():
                                     [None, self.la.rblf_q.mat.local_mat.CreateDiagonal()]])
             RMX = self.la.rblf_x.mat.local_mat.CreateDiagonal()
             RMQ = self.la.rblf_q.mat.local_mat.CreateDiagonal()
-            if ngs.mpi_world.size > 1:
+            if mpi_world.size > 1:
                 RMX = ngs.ParallelMatrix(RMX, self.la.rblf_x.mat.row_pardofs, self.la.rblf_x.mat.row_pardofs, ngs.ParallelMatrix.D2D)
                 RMQ = ngs.ParallelMatrix(RMQ, self.la.rblf_q.mat.row_pardofs, self.la.rblf_q.mat.row_pardofs, ngs.ParallelMatrix.D2D)
             RMAT = ngs.BlockMatrix([[RMX, None], [None, RMQ]])
@@ -1874,7 +1878,7 @@ class StokesTemplate():
             self.solver = bp_cg
         elif solver == "gmres":
             # ngs.solvers.GMRes(A = self.la.M, b = rhs_vec, x = sol_vec, pre = self.la.Mpre,
-            #                   tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms )
+            #                   tol = tol, printrates = mpi_world.rank == 0, maxsteps=ms )
             # note: to compare, use rel_err=False
             # A = ngs.BlockMatrix([ [ self.la.Apre, self.la.Apre @ self.la.BT @ self.la.Spre ],
             #                       [ None, - self.la.Spre ] ])
@@ -1940,7 +1944,7 @@ class StokesTemplate():
         elif solver == "minres":
             # note: to compare, use rel_err=False
             # ngs.solvers.MinRes(mat = self.la.M, rhs = rhs_vec, sol = sol_vec, pre = self.la.Mpre,
-                               # tol = tol, printrates = ngs.mpi_world.rank == 0, maxsteps=ms)
+                               # tol = tol, printrates = mpi_world.rank == 0, maxsteps=ms)
             # nits = -1
 
             # note: szpc does not work here, MINRES needs symm. & pos. semi-definite!
